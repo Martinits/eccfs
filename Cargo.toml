@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+crypto = "0.5.1"
 fuser = "0.13"
 libc = "0.2.149"
 

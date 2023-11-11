@@ -42,7 +42,7 @@ pub type FsResult<T> = Result<T, FsError>;
 pub trait FileSystem: Sync + Send {
     fn sync(&self) -> FsResult<()>;
 
-    fn root_inode(&self) -> Arc<dyn INode>;
+    fn root_inode(&self) -> Arc<dyn Inode>;
 
     // fn info(&self) -> FsInfo;
 }
@@ -58,10 +58,6 @@ pub enum FileType {
     Reg,
     Dir,
     Lnk,
-    Chr,
-    Blk,
-    Fifo,
-    Sock,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -101,7 +97,7 @@ pub enum FallocateMode {
     InsertRange,
 }
 
-pub trait INode: Sync + Send {
+pub trait Inode: Sync + Send {
     fn read_at(&self, offset: usize, buf: &mut [u8]) -> FsResult<usize>;
 
     fn write_at(&self, offset: usize, buf: &[u8]) -> FsResult<usize>;
@@ -116,18 +112,18 @@ pub trait INode: Sync + Send {
 
     fn sync_data(&self) -> FsResult<()>;
 
-    fn create(&self, name: &str, ftype: FileType, mode: u16) -> FsResult<Arc<dyn INode>>;
+    fn create(&self, name: &str, ftype: FileType, mode: u16) -> FsResult<Arc<dyn Inode>>;
 
-    fn link(&self, name: &str, other: &Arc<dyn INode>) -> FsResult<()>;
+    fn link(&self, name: &str, other: &Arc<dyn Inode>) -> FsResult<()>;
 
     fn unlink(&self, name: &str) -> FsResult<()>;
 
-    /// Move INode `self/old_name` to `target/new_name`.
+    /// Move Inode `self/old_name` to `target/new_name`.
     /// If `target` equals `self`, do rename.
-    fn movei(&self, old_name: &str, target: &Arc<dyn INode>, new_name: &str) -> FsResult<()>;
+    fn movei(&self, old_name: &str, target: &Arc<dyn Inode>, new_name: &str) -> FsResult<()>;
 
-    /// Find the INode `name` in the directory
-    fn lookup(&self, name: &str) -> FsResult<Arc<dyn INode>>;
+    /// Find the Inode `name` in the directory
+    fn lookup(&self, name: &str) -> FsResult<Arc<dyn Inode>>;
 
     /// Get the name of directory entry
     fn get_entry(&self, id: usize) -> FsResult<String>;
