@@ -5,11 +5,11 @@ pub mod disk;
 use crate::vfs::{FileSystem, FsResult, Inode};
 use std::sync::Arc;
 use std::path::{Path, PathBuf};
-use crate::crypto::DefaultKeyType;
+use crate::crypto::Key128;
 
 pub enum ROFSMode {
     IntegrityOnly,
-    Encrypted(DefaultKeyType),
+    Encrypted(Key128),
 }
 
 pub struct ROFS {

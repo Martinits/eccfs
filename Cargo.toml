@@ -4,9 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+aes-gcm = "0.10.3"
 crypto = "0.5.1"
 fuser = "0.13"
 libc = "0.2.149"
+sha3 = "0.10.8"
 
 [[bin]]
 name = "eccfs-cli"

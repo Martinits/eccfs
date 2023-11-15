@@ -8,4 +8,6 @@ struct DInode {
     mtime: u32,
     mode: u16,
     nlinks: u16,
+    crypto_blob: [u8; 32],
+    data_start: u64
 }
