@@ -1,43 +1,7 @@
 use std::fmt;
 use std::result::Result;
 use std::sync::Arc;
-
-#[derive(Debug, Eq, PartialEq)]
-pub enum FsError {
-    NotSupported,     // E_UNIMP, or E_INVAL
-    NotFile,          // E_ISDIR
-    IsDir,            // E_ISDIR, used only in link
-    NotDir,           // E_NOTDIR
-    EntryNotFound,    // E_NOENT
-    EntryExist,       // E_EXIST
-    NotSameFs,        // E_XDEV
-    InvalidParam,     // E_INVAL
-    NoDeviceSpace, // E_NOSPC, but is defined and not used in the original ucore, which uses E_NO_MEM
-    DirRemoved,    // E_NOENT, when the current dir was remove by a previous unlink
-    DirNotEmpty,   // E_NOTEMPTY
-    WrongFs,       // E_INVAL, when we find the content on disk is wrong when opening the device
-    DeviceError(i32), // Device error contains the inner error number to report the error of device
-    IOCTLError,
-    NoDevice,
-    Again,          // E_AGAIN, when no data is available, never happens in fs
-    SymLoop,        // E_LOOP
-    Busy,           // E_BUSY
-    WrProtected,    // E_RDOFS
-    NoIntegrity,    // E_RDOFS
-    PermError,      // E_PERM
-    NameTooLong,    // E_NAMETOOLONG
-    FileTooBig,     // E_FBIG
-    OpNotSupported, // E_OPNOTSUPP
-    NotMountPoint,  // E_INVAL
-}
-
-impl fmt::Display for FsError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-
-pub type FsResult<T> = Result<T, FsError>;
+use crate::*;
 
 pub trait FileSystem: Sync + Send {
     fn sync(&self) -> FsResult<()>;
