@@ -79,6 +79,7 @@ pub struct DInodeDir {
     /// index list
     idx_list: [EntryIndex],
 }
+// rw_as_blob
 impl AsRef<[u8]> for DInodeDir {
     #[inline]
     fn as_ref(&self) -> &[u8] {

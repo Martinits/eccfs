@@ -1,48 +1,84 @@
 use std::sync::Arc;
-use crate::bcache::PlainBCache;
-use crate::storage::Storage;
+use crate::storage::{ROStorage, RWStorage};
 
 // use features to separate impls for SGX and TDX+FUSE
 // for TDX+FUSE deployment, only cache index blocks, kernel will handle the left cache
-struct HashTree {
-    idx_cache: PlainBCache,
+pub struct ROHashTree {
+    backend: Arc<dyn ROStorage>,
     start: u64,
     length: usize,
-    writable: bool,
     encrypted: bool,
 }
 
-impl HashTree {
+impl ROHashTree {
     fn new(
-        storage: Arc<dyn Storage>,
+        backend: Arc<dyn ROStorage>,
         start: u64,
         length: usize,
-        writable: bool,
         encrypted: bool,
     ) -> Self {
         Self {
-            idx_cache: PlainBCache::new(10, storage),
+            backend,
             start,
             length,
-            writable,
             encrypted,
         }
     }
 
-    fn validate_root(self) {
+    pub fn validate_root(self) {
 
     }
 
-    fn read(self, pos: u64, nblk: usize, to: &[u8]) {
+    pub fn read(self, pos: u64, nblk: usize, to: &[u8]) {
 
     }
 
-    fn write(self, pos: u64, nblk: usize, from: &mut [u8]) {
+    pub fn write(self, pos: u64, nblk: usize, from: &mut [u8]) {
 
     }
 
     // flush all blocks including root
-    fn flush(self) {
+    pub fn flush(self) {
+
+    }
+}
+
+pub struct RWHashTree {
+    backend: Arc<dyn RWStorage>,
+    start: u64,
+    length: usize,
+    encrypted: bool,
+}
+
+impl RWHashTree {
+    pub fn new(
+        backend: Arc<dyn RWStorage>,
+        start: u64,
+        length: usize,
+        encrypted: bool,
+    ) -> Self {
+        Self {
+            backend,
+            start,
+            length,
+            encrypted,
+        }
+    }
+
+    pub fn validate_root(self) {
+
+    }
+
+    pub fn read(self, pos: u64, nblk: usize, to: &[u8]) {
+
+    }
+
+    pub fn write(self, pos: u64, nblk: usize, from: &mut [u8]) {
+
+    }
+
+    // flush all blocks including root
+    pub fn flush(self) {
 
     }
 }

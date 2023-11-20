@@ -96,7 +96,7 @@ pub trait Inode: Sync + Send {
     fn list(&self) -> FsResult<Vec<String>> {
         let info = self.metadata()?;
         if info.ftype != FileType::Dir {
-            return Err(FsError::NotDir);
+            return Err(FsError::NotADirectory);
         }
         Ok((0..)
             .map(|i| self.get_entry(i))
