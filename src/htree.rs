@@ -8,6 +8,7 @@ pub struct ROHashTree {
     start: u64,
     length: usize,
     encrypted: bool,
+    data_cache: bool,
 }
 
 impl ROHashTree {
@@ -16,12 +17,14 @@ impl ROHashTree {
         start: u64,
         length: usize,
         encrypted: bool,
+        data_cache: bool,
     ) -> Self {
         Self {
             backend,
             start,
             length,
             encrypted,
+            data_cache,
         }
     }
 
