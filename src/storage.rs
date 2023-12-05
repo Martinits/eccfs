@@ -4,11 +4,11 @@ use std::io::{ErrorKind, SeekFrom};
 use crate::*;
 
 pub trait ROStorage: Send + Sync {
-    fn read_blk(&mut self, pos: u64, to: &mut [u8], cachable: bool) -> FsResult<()>;
+    fn read_blk(&mut self, pos: u64) -> FsResult<Block>;
 }
 
 pub trait RWStorage: ROStorage + Send + Sync {
-    fn write_blk(&mut self, pos: u64, from: &[u8], cachable: bool) -> FsResult<()>;
+    fn write_blk(&mut self, pos: u64, from: &Block) -> FsResult<()>;
 }
 
 pub struct FileStorage {
@@ -33,25 +33,23 @@ impl FileStorage {
 }
 
 impl ROStorage for FileStorage {
-    fn read_blk(&mut self, pos: u64, to: &mut [u8], _cachable: bool) -> FsResult<()> {
-        assert_eq!(to.len(), BLK_SZ);
-
+    fn read_blk(&mut self, pos: u64) -> FsResult<Block> {
         let position = self.handle.seek(SeekFrom::Start(pos * BLK_SZ as u64))
             .map_err( |e| Into::<FsError>::into(e) )?;
         if position != pos * BLK_SZ as u64 {
             Err(FsError::NotSeekable)
         } else {
-            Ok(self.handle.read_exact(to).map_err(
+            let mut blk = [0u8; BLK_SZ] as Block;
+            self.handle.read_exact(&mut blk).map_err(
                 |e| Into::<FsError>::into(e)
-            )?)
+            )?;
+            Ok(blk)
         }
     }
 }
 
 impl RWStorage for FileStorage {
-    fn write_blk(&mut self, pos: u64, from: &[u8], _cachable: bool) -> FsResult<()> {
-        assert_eq!(from.len(), BLK_SZ);
-
+    fn write_blk(&mut self, pos: u64, from: &Block) -> FsResult<()> {
         let position = self.handle.seek(SeekFrom::Start(pos * BLK_SZ as u64))
             .map_err( |e| Into::<FsError>::into(e) )?;
         if position != pos * BLK_SZ as u64 {
@@ -70,29 +68,13 @@ pub struct DeviceStorage {
 }
 
 impl ROStorage for DeviceStorage {
-    fn read_blk(&mut self, pos: u64, to: &mut [u8], _cachable: bool) -> FsResult<()> {
+    fn read_blk(&mut self, pos: u64) -> FsResult<Block> {
         unimplemented!();
     }
 }
 
 impl RWStorage for DeviceStorage {
-    fn write_blk(&mut self, pos: u64, from: &[u8], _cachable: bool) -> FsResult<()> {
+    fn write_blk(&mut self, pos: u64, from: &Block) -> FsResult<()> {
         unimplemented!();
     }
 }
-
-// pub trait ROImage: Send + Sync {
-//     fn open(self, path: &Path, start: u64, length: u64);
-//
-//     fn read_blk(self, pos: u64);
-//
-//     fn close(self);
-// }
-//
-// pub trait RWImage: ROImage + Send + Sync {
-//     fn create(self, path: &Path);
-//
-//     fn write_blk(self, pos: u64);
-//
-//     fn remove(self);
-// }

@@ -6,8 +6,8 @@ pub(crate) mod bcache;
 pub(crate) mod htree;
 pub(crate) mod storage;
 pub(crate) mod crypto;
+pub(crate) mod blru;
 
-use std::io::ErrorKind;
 
 pub const BLK_SZ: usize = 4096;
 pub type Block = [u8; 4096];
@@ -84,6 +84,10 @@ pub enum FsError {
     // Errors specific to this crate
     CryptoError,
     // IntegrityCheckError,
+    CacheIsFull,
+    SendError,
+    RecvError,
+    LockError,
     UnknownError,
 }
 impl std::fmt::Display for FsError {
