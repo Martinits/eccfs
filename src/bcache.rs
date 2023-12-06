@@ -5,12 +5,23 @@ use crate::blru::BlockLru;
 use std::sync::mpsc::{self, Sender, Receiver};
 use std::sync::RwLock;
 use std::thread::{self, JoinHandle};
+use crate::crypto::*;
 
 
-struct ROCacheReq {
-    pos: u64,
-    cachable: bool,
-    reply: Sender<FsResult<Arc<Block>>>,
+#[derive(Clone)]
+pub enum CacheLoadMeta {
+    Encrypted(Key128, MAC128),
+    IntegrityOnly(Hash256),
+}
+
+enum ROCacheReq {
+    Get {
+        pos: u64,
+        cachable: bool,
+        miss_hint: Option<CacheLoadMeta>,
+        reply: Sender<FsResult<Option<Arc<Block>>>>,
+    },
+    Flush,
 }
 
 // superblock is not in cache, and stick to memory during runtime
@@ -52,17 +63,34 @@ impl ROCache {
         }
     }
 
-    pub fn get_blk(&mut self, pos: u64, cachable: bool) -> FsResult<Arc<Block>> {
+    pub fn get_blk(&mut self, pos: u64, cachable: bool) -> FsResult<Option<Arc<Block>>> {
+        self.get_blk_impl(pos, cachable, None)
+    }
+
+    pub fn get_blk_hint(
+        &mut self, pos: u64, cachable: bool, hint: CacheLoadMeta
+    ) -> FsResult<Arc<Block>> {
+        self.get_blk_impl(pos, cachable, Some(hint))?.ok_or(FsError::NotFound)
+    }
+
+    fn get_blk_impl(
+        &mut self, pos: u64, cachable: bool, hint: Option<CacheLoadMeta>
+    ) -> FsResult<Option<Arc<Block>>> {
         let (tx, rx) = mpsc::channel();
-        self.tx_to_server.send(ROCacheReq {
+        self.tx_to_server.send(ROCacheReq::Get {
             pos,
             cachable,
             reply: tx,
+            miss_hint: hint,
         }).map_err(|_| FsError::SendError)?;
 
         let ablk = rx.recv().map_err(|_| FsError::RecvError)??;
 
         Ok(ablk)
+    }
+
+    pub fn flush(&mut self) -> FsResult<()> {
+        self.tx_to_server.send(ROCacheReq::Flush).map_err(|_| FsError::SendError)
     }
 }
 
@@ -89,32 +117,64 @@ impl ROCacheServer {
     }
 
     fn process(&mut self, req: ROCacheReq) {
-        let ROCacheReq {cachable, reply, pos} = req;
-        let send = if cachable {
-            match self.lru.get(pos) {
-                Ok(Some(ablk)) => {
-                    Ok(ablk)
-                }
-                Ok(None) => {
-                    // cache miss, get from backend
-                    self.cache_miss(pos)
-                }
-                Err(e) => Err(e),
+        match req {
+            ROCacheReq::Get {cachable, reply, pos, miss_hint } => {
+                let send = if cachable {
+                    match self.lru.get(pos) {
+                        Ok(Some(ablk)) => {
+                            Ok(Some(ablk))
+                        }
+                        Ok(None) => {
+                            // cache miss, get from backend
+                            if let Some(hint) = miss_hint {
+                                self.cache_miss(pos, hint)
+                            } else {
+                                Err(FsError::CacheNeedHint)
+                            }
+                        }
+                        Err(e) => Err(e),
+                    }
+                } else if let Some(hint) = miss_hint {
+                    self.fetch_from_backend(pos, hint).map(
+                        |blk| Some(Arc::new(blk))
+                    )
+                } else {
+                    Err(FsError::CacheNeedHint)
+                };
+                reply.send(send).unwrap();
             }
-        } else {
-            self.backend.read_blk(pos).map(
-                |blk| Arc::new(blk)
-            )
-        };
-        reply.send(send).unwrap();
+            ROCacheReq::Flush => {
+                self.flush();
+            }
+        }
     }
 
-    fn cache_miss(&mut self, pos: u64) -> FsResult<Arc<Block>> {
-        let blk = self.backend.read_blk(pos)?;
+    fn flush(&mut self) {
+        self.lru.flush_no_wb();
+    }
+
+    fn fetch_from_backend(&mut self, pos: u64, hint: CacheLoadMeta) -> FsResult<Block> {
+        let mut blk = self.backend.read_blk(pos)?;
+        match hint {
+            CacheLoadMeta::Encrypted(key, mac) => {
+                aes_gcm_128_blk_dec(&mut blk, &key, &mac, pos)?;
+            }
+            CacheLoadMeta::IntegrityOnly(hash) => {
+                let result = sha3_256_blk(&blk)?;
+                if result != hash {
+                    return Err(FsError::IntegrityCheckError);
+                }
+            }
+        }
+        Ok(blk)
+    }
+
+    fn cache_miss(&mut self, pos: u64, hint: CacheLoadMeta) -> FsResult<Option<Arc<Block>>> {
+        let blk = self.fetch_from_backend(pos, hint)?;
         let ablk = Arc::new(blk);
         // read only cache, no write back
         let _ = self.lru.insert_and_get(pos, &ablk)?;
-        Ok(ablk)
+        Ok(Some(ablk))
     }
 }
 

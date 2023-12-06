@@ -55,4 +55,8 @@ impl<T> BlockLru<T> {
             Ok(ret)
         }
     }
+
+    pub fn flush_no_wb(&mut self) {
+        self.0.clear();
+    }
 }

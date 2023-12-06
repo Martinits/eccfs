@@ -9,7 +9,9 @@ pub(crate) mod crypto;
 pub(crate) mod blru;
 
 
-pub const BLK_SZ: usize = 4096;
+pub const MAX_LOOP_CNT: u64 = 10001;
+
+pub const BLK_SZ: u64 = 4096;
 pub type Block = [u8; 4096];
 
 
@@ -83,11 +85,12 @@ pub enum FsError {
     OutOfMemory,
     // Errors specific to this crate
     CryptoError,
-    // IntegrityCheckError,
+    IntegrityCheckError,
     CacheIsFull,
     SendError,
     RecvError,
     LockError,
+    CacheNeedHint,
     UnknownError,
 }
 impl std::fmt::Display for FsError {

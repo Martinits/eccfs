@@ -9,52 +9,70 @@ pub type Nonce96 = [u8; 12];
 pub type Key128 = [u8; 16];
 pub type MAC128 = [u8; 16];
 pub type Hash256 = [u8; 32];
+pub type KeyEntry = [u8; 32];
 
-pub fn sha3_256_blk(input: &Block) -> Hash256 {
+pub const KEY_ENTRY_SZ: usize = 32;
+
+pub fn sha3_256_blk(input: &Block) -> FsResult<Hash256> {
     let mut hasher = Sha3_256::new();
 
     hasher.update(input);
 
-    hasher.finalize().try_into().unwrap()
+    let hash = hasher.finalize().try_into().map_err(
+        |_| FsError::UnknownError
+    )?;
+
+    Ok(hash)
+}
+
+fn pos_to_nonce(pos: u64) -> Nonce96 {
+    // nonce is 96 bit integer of block physical position (in block) (little endian)
+    let posbyte = pos.to_le_bytes();
+    let mut nonce = [0u8; 12];
+    nonce[4..].copy_from_slice(&posbyte);
+    nonce
 }
 
 pub fn aes_gcm_128_blk_enc(
-    input: &Block,
+    input: &mut Block,
     key: &Key128,
-    nonce: &Nonce96
-) -> FsResult<(Block, MAC128)> {
+    pos_as_nonce: u64,
+) -> FsResult<MAC128> {
     let k = Key::<Aes128Gcm>::from_slice(key);
     let cipher = Aes128Gcm::new(&k);
-    let nonce = Nonce::from_slice(nonce);
+    let nonce = pos_to_nonce(pos_as_nonce);
+    let nonce = Nonce::from_slice(&nonce);
 
-    let mut buffer: Block = input.clone();
+    // let mut buffer: Block = input.clone();
     let tag = cipher.encrypt_in_place_detached(
-        &nonce, b"", &mut buffer
+        &nonce, b"", input
     ).map_err(
         |_| FsError::CryptoError
     )?;
 
-    Ok((buffer, tag.try_into().unwrap()))
+    Ok(tag.try_into().unwrap())
 }
 
 pub fn aes_gcm_128_blk_dec(
-    input: &Block,
+    input: &mut Block,
     key: &Key128,
     mac: &MAC128,
-    nonce: &Nonce96
-) -> FsResult<Block> {
+    pos_as_nonce: u64,
+) -> FsResult<()> {
     let k = Key::<Aes128Gcm>::from_slice(key);
     let cipher = Aes128Gcm::new(&k);
-    let nonce = Nonce::from_slice(nonce);
 
-    let mut buffer: Block = input.clone();
+    let nonce = pos_to_nonce(pos_as_nonce);
+    let nonce = Nonce::from_slice(&nonce);
+
+    // let mut buffer: Block = input.clone();
     cipher.decrypt_in_place_detached(
-        &nonce, b"", &mut buffer, Tag::<Aes128Gcm>::from_slice(mac)
+        &nonce, b"", input, Tag::<Aes128Gcm>::from_slice(mac)
     ).map_err(
-        |_| FsError::CryptoError
+        |_| FsError::IntegrityCheckError
     )?;
 
-    Ok(buffer)
+    Ok(())
 }
 
 mod tests {
@@ -97,13 +115,13 @@ mod tests {
     #[test]
     fn aes_gcm_128() {
         let plain: Block = [14; 4096];
+        let mut buffer = plain.clone();
         let key: Key128 = [3; 16];
-        let nonce: Nonce96 = [5; 12];
 
-        let (cipher, mac) = aes_gcm_128_blk_enc(&plain, &key, &nonce).unwrap();
+        let mac = aes_gcm_128_blk_enc(&mut buffer, &key, 123).unwrap();
 
-        let plain_out = aes_gcm_128_blk_dec(&cipher, &key, &mac, &nonce).unwrap();
+        let plain_out = aes_gcm_128_blk_dec(&mut buffer, &key, &mac, 123).unwrap();
 
-        assert_eq!(plain, plain_out);
+        assert_eq!(plain, buffer);
     }
 }
