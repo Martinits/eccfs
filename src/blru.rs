@@ -32,23 +32,10 @@ impl<T> BlockLru<T> {
         let mut ret = None;
         if self.0.len() >= self.0.cap().into() {
             // pop tail item
-            if let Some((k, _)) = self.0.iter().rev().find(
-                |&(_, v)| Arc::<T>::strong_count(&v.0) == 1
-            ) {
-                let (k, (alock, dirty)) = self.0.pop_entry(&k.clone()).unwrap();
-                if dirty {
-                    if let Some(lock) = Arc::<T>::into_inner(alock) {
-                        // return payload
-                        ret = Some((k, lock));
-                    } else {
-                        return Err(FsError::UnknownError);
-                    }
-                }
-            } else {
-                return Err(FsError::CacheIsFull);
-            }
+            ret = self.pop_lru()?;
         }
 
+        // push new entry into cache
         if self.0.put(key, (val.clone(), false)).is_some() {
             Err(FsError::UnknownError)
         } else {
@@ -56,7 +43,62 @@ impl<T> BlockLru<T> {
         }
     }
 
+    // pop first entry by LRU rules, return it for write back if it's dirty
+    fn pop_lru(&mut self) -> FsResult<Option<(u64, T)>> {
+        if let Some((&k, _)) = self.0.iter().rev().find(
+            |&(_, v)| Arc::<T>::strong_count(&v.0) == 1
+        ) {
+            let (k, (alock, dirty)) = self.0.pop_entry(&k).unwrap();
+            if dirty {
+                if let Some(payload) = Arc::<T>::into_inner(alock) {
+                    // return payload for write back
+                    Ok(Some((k, payload)))
+                } else {
+                    Err(FsError::UnknownError)
+                }
+            } else {
+                Ok(None)
+            }
+        } else {
+            Err(FsError::CacheIsFull)
+        }
+    }
+
+    // get a vector of keys of all entries that is not referenced
+    fn get_all_unused(&self) -> Vec<u64> {
+        self.0.iter().filter_map(
+            |(&k, arc)| {
+                if Arc::<T>::strong_count(&arc.0) == 1 {
+                    Some(k)
+                } else {
+                    None
+                }
+            }
+        ).collect()
+    }
+
+    // flush all entries that is not referenced, even it's dirty
     pub fn flush_no_wb(&mut self) {
-        self.0.clear();
+        self.get_all_unused().iter().for_each(
+            |k| {
+                self.0.pop(k).unwrap();
+            }
+        );
+    }
+
+    // flush all entries that is not referenced, return dirty ones
+    pub fn flush_wb(&mut self) -> Vec<(u64, T)> {
+        self.get_all_unused().iter().filter_map(
+            |&k| {
+                let (arc, dirty) = self.0.pop(&k).unwrap();
+                if dirty {
+                    let payload = Arc::<T>::into_inner(arc).unwrap();
+                    // return payload for write back
+                    Some((k, payload))
+                } else {
+                    None
+                }
+            }
+        ).collect()
     }
 }
