@@ -82,15 +82,15 @@ impl ROCache {
             cachable,
             reply: tx,
             miss_hint: hint,
-        }).map_err(|_| FsError::SendError)?;
+        }).map_err(|_| FsError::ChannelSendError)?;
 
-        let ablk = rx.recv().map_err(|_| FsError::RecvError)??;
+        let ablk = rx.recv().map_err(|_| FsError::ChannelRecvError)??;
 
         Ok(ablk)
     }
 
     pub fn flush(&mut self) -> FsResult<()> {
-        self.tx_to_server.send(ROCacheReq::Flush).map_err(|_| FsError::SendError)
+        self.tx_to_server.send(ROCacheReq::Flush).map_err(|_| FsError::ChannelSendError)
     }
 }
 
@@ -238,9 +238,9 @@ impl RWCache {
             pos,
             cachable,
             reply: tx,
-        }).map_err(|_| FsError::SendError)?;
+        }).map_err(|_| FsError::ChannelSendError)?;
 
-        let ablk = rx.recv().map_err(|_| FsError::RecvError)??;
+        let ablk = rx.recv().map_err(|_| FsError::ChannelRecvError)??;
 
         Ok(ablk)
     }
@@ -255,9 +255,9 @@ impl RWCache {
             cachable,
             dirty,
             reply: tx,
-        }).map_err(|_| FsError::SendError)?;
+        }).map_err(|_| FsError::ChannelSendError)?;
 
-        let ablk = rx.recv().map_err(|_| FsError::RecvError)??;
+        let ablk = rx.recv().map_err(|_| FsError::ChannelRecvError)??;
 
         Ok(ablk)
     }

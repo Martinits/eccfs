@@ -21,7 +21,7 @@ impl FileStorage {
     pub fn new(path: &String, writable: bool) -> FsResult<Self> {
         let handle = OpenOptions::new().read(true).write(writable)
             .open(path).map_err( |e| {
-                Into::<FsError>::into(e.kind() as u32)
+                Into::<FsError>::into(e.kind() as u64)
             })?;
 
         Ok(Self {

@@ -21,7 +21,7 @@ struct DInodeBase {
     /// modiied time
     mtime: u32,
 
-    /// mode bits, same as kernel
+     /// mode bits, one byte for FTYPE and 3 for UGO RWX permissions
     mode: u16,
 
     /// number of hard links
