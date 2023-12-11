@@ -89,7 +89,7 @@ impl FileSystem for ROFS {
     }
 
     fn destroy(&self) -> FsResult<()> {
-        unimplemented!();
+        self.fsync()
     }
 
     fn finfo(&self) -> FsResult<FsInfo> {
@@ -105,7 +105,7 @@ impl FileSystem for ROFS {
     }
 
     fn iwrite(&self, inode: InodeID, offset: usize, from: &[u8]) -> FsResult<usize> {
-        unimplemented!();
+        Err(FsError::Unsupported)
     }
 
     fn get_meta(&self, inode: InodeID) -> FsResult<Metadata> {
@@ -113,7 +113,7 @@ impl FileSystem for ROFS {
     }
 
     fn set_meta(&self, inode: InodeID, set_md: SetMetadata) -> FsResult<()> {
-        unimplemented!();
+        Err(FsError::Unsupported)
     }
 
     fn iread_link(&self, inode: InodeID) -> FsResult<String> {
@@ -153,10 +153,6 @@ impl FileSystem for ROFS {
     }
 
     fn lookup(&self, inode: InodeID, name: &OsStr) -> FsResult<Option<InodeID>> {
-        unimplemented!();
-    }
-
-    fn get_entry(&self, inode: InodeID, id: usize) -> FsResult<String> {
         unimplemented!();
     }
 

@@ -4,6 +4,7 @@ use std::ffi::OsStr;
 use std::time::SystemTime;
 use std::path::Path;
 
+/// for ROFS, 16bit block offset + 48bit block position
 pub type InodeID = u64;
 
 #[derive(Debug, Default)]
@@ -29,44 +30,61 @@ pub struct FsInfo {
 }
 
 pub trait FileSystem: Sync + Send {
+    /// init fs
     fn init(&self) -> FsResult<()>;
 
+    /// destroy this fs,  called before all worklaods are finished for this fs
     fn destroy(&self) -> FsResult<()>;
 
+    /// get fs stat info in superblock
     fn finfo(&self) -> FsResult<FsInfo>;
 
+    /// sync all filesystem, including metadata and user data
     fn fsync(&self) -> FsResult<()>;
 
+    /// read content of inode
     fn iread(&self, inode: InodeID, offset: usize, to: &mut [u8]) -> FsResult<usize>;
 
+    /// write content of inode
     fn iwrite(&self, inode: InodeID, offset: usize, from: &[u8]) -> FsResult<usize>;
 
+    /// get metadata of inode
     fn get_meta(&self, inode: InodeID) -> FsResult<Metadata>;
 
+    /// set metadata of inode
     fn set_meta(&self, inode: InodeID, set_md: SetMetadata) -> FsResult<()>;
 
+    /// read symlink only if inode is a SymLink
     fn iread_link(&self, inode: InodeID) -> FsResult<String>;
 
+    /// sync metadata of this inode
     fn isync_meta(&self, inode: InodeID) -> FsResult<()>;
 
+    /// sync user data of this inode
     fn isync_data(&self, inode: InodeID) -> FsResult<()>;
 
+    /// create inode
     fn create(&self, inode: InodeID, name: &OsStr, ftype: FileType, perm: u16) -> FsResult<InodeID>;
 
+    /// create hard link
     fn link(&self, newparent: InodeID, newname: &OsStr, linkto: InodeID) -> FsResult<InodeID>;
 
+    /// remove a link to inode
     fn unlink(&self, inode: InodeID, name: &OsStr) -> FsResult<()>;
 
+    /// create symlink
     fn symlink(&self, inode: InodeID, name: &OsStr, to: &Path) -> FsResult<InodeID>;
 
+    /// move `inode/name` to `to/newname`
     fn rename(&self, inode: InodeID, name: &OsStr, to: InodeID, newname: &OsStr) -> FsResult<()>;
 
+    /// lookup name in inode only if inode is a dir
     fn lookup(&self, inode: InodeID, name: &OsStr) -> FsResult<Option<InodeID>>;
 
+    /// list all entries in inode only if it's a dir
     fn listdir(&self, inode: InodeID) -> FsResult<Vec<(InodeID, String, FileType)>>;
 
-    fn get_entry(&self, inode: InodeID, id: usize) -> FsResult<String>;
-
+    /// fallocate
     fn fallocate(&self, inode: InodeID, mode: FallocateMode, offset: usize, len: usize) -> FsResult<()>;
 }
 
