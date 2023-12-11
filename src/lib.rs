@@ -9,6 +9,8 @@ pub(crate) mod crypto;
 pub(crate) mod blru;
 pub mod error;
 pub use error::*;
+use crypto::*;
+use std::mem;
 
 
 pub const MAX_LOOP_CNT: u64 = 10001;
@@ -16,6 +18,34 @@ pub const MAX_LOOP_CNT: u64 = 10001;
 pub const BLK_SZ: u64 = 4096;
 pub type Block = [u8; 4096];
 
+pub const ROOT_INODE_ID: u64 = 1;
+
+#[derive(Clone)]
+pub enum FSMode {
+    Encrypted(Key128, MAC128),
+    IntegrityOnly(Hash256),
+}
+
+impl FSMode {
+    pub fn from_key_entry(ke: KeyEntry, encrypted: bool) -> Self {
+        if encrypted {
+            let (key, mac): (Key128, MAC128) = unsafe {
+                mem::transmute(ke)
+            };
+            Self::Encrypted(key, mac)
+        } else {
+            Self::IntegrityOnly(ke as Hash256)
+        }
+    }
+
+    pub fn is_encrypted(&self) -> bool {
+        if let Self::Encrypted(_, _) = self {
+            true
+        } else {
+            false
+        }
+    }
+}
 
 macro_rules! read_from_blob {
     ($T: ty) => {

@@ -3,32 +3,89 @@ pub mod inode;
 pub mod disk;
 
 use crate::vfs::*;
-use std::sync::Arc;
-use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
+use std::path::Path;
 use crate::crypto::Key128;
 use crate::*;
 use std::ffi::OsStr;
+use superblock::*;
+use crate::htree::*;
+use std::collections::HashMap;
+use inode::Inode;
+use crate::bcache::*;
+use crate::storage::*;
+use crate::crypto::*;
 
-pub enum ROFSMode {
-    IntegrityOnly,
-    Encrypted(Key128),
-}
 
 pub struct ROFS {
-    mode: ROFSMode,
+    mode: FSMode,
+    cache_data: bool,
+    sb: RwLock<SuperBlock>,
+    inode_tbl: ROHashTree,
+    dirent_tbl: ROHashTree,
+    path_tbl: ROHashTree,
+    files: RwLock<HashMap<u64, ROHashTree>>,
+    icac: Option<RwLock<HashMap<InodeID, Inode>>>,
+    de_cac: Option<RwLock<HashMap<String, InodeID>>>,
 }
 
 impl ROFS {
-    pub fn new(path: &Path, mode: ROFSMode) -> FsResult<Self> {
+    pub fn new(
+        path: &Path,
+        mode: FSMode,
+        cache_data: bool,
+        cache_inode: bool,
+        cache_de: bool,
+    ) -> FsResult<Self> {
+        let mut storage = FileStorage::new(path, false)?;
+
+        // read superblock
+        let sb_blk = storage.read_blk(SUPERBLOCK_POS)?;
+        let sb = SuperBlock::new(mode.clone(), sb_blk)?;
+
+        // start cache channel server
+        let cac = ROCache::new(Box::new(storage), DEFAULT_CACHE_CAP);
+
+        // get hash trees
+        let inode_tbl = ROHashTree::new(
+            cac.clone(),
+            sb.inode_tbl_start,
+            sb.inode_tbl_len,
+            FSMode::from_key_entry(sb.inode_tbl_key, mode.is_encrypted()),
+            cache_data,
+        );
+        let dirent_tbl = ROHashTree::new(
+            cac.clone(),
+            sb.dirent_tbl_start,
+            sb.dirent_tbl_len,
+            FSMode::from_key_entry(sb.dirent_tbl_key, mode.is_encrypted()),
+            cache_data,
+        );
+        let path_tbl = ROHashTree::new(
+            cac.clone(),
+            sb.path_tbl_start,
+            sb.path_tbl_len,
+            FSMode::from_key_entry(sb.path_tbl_key, mode.is_encrypted()),
+            cache_data,
+        );
+
         Ok(ROFS {
             mode,
+            sb: RwLock::new(sb),
+            cache_data,
+            inode_tbl,
+            dirent_tbl,
+            path_tbl,
+            files: Default::default(),
+            icac: cache_inode.then(|| RwLock::new(HashMap::new())),
+            de_cac: cache_de.then(|| RwLock::new(HashMap::new())),
         })
     }
 }
 
 impl FileSystem for ROFS {
     fn init(&self) ->FsResult<()> {
-        unimplemented!();
+        Ok(())
     }
 
     fn destroy(&self) -> FsResult<()> {

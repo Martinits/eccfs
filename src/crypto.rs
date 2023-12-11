@@ -5,7 +5,7 @@ use aes_gcm::{
 use sha3::{Digest, Sha3_256};
 use crate::*;
 
-pub type Nonce96 = [u8; 12];
+type Nonce96 = [u8; 12];
 pub type Key128 = [u8; 16];
 pub type MAC128 = [u8; 16];
 pub type Hash256 = [u8; 32];
@@ -23,6 +23,15 @@ pub fn sha3_256_blk(input: &Block) -> FsResult<Hash256> {
     )?;
 
     Ok(hash)
+}
+
+pub fn sha3_256_blk_check(input: &Block, hash: &Hash256) -> FsResult<()> {
+    let actual = sha3_256_blk(input)?;
+    if actual != *hash {
+        Err(FsError::IntegrityCheckError)
+    } else {
+        Ok(())
+    }
 }
 
 fn pos_to_nonce(pos: u64) -> Nonce96 {

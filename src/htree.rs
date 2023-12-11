@@ -72,22 +72,18 @@ pub struct ROHashTree {
     length: u64,
     encrypted: bool,
     cache_data: bool,
-    root_hint: CacheLoadMeta,
+    root_hint: CacheMissHint,
 }
 
 impl ROHashTree {
-    fn new(
+    pub fn new(
         backend: ROCache,
         start: u64, // in blocks
         length: u64, // in blocks
-        root_hint: CacheLoadMeta,
+        root_hint: CacheMissHint,
         cache_data: bool,
     ) -> Self {
-        let encrypted = if let CacheLoadMeta::Encrypted(_, _) = &root_hint {
-            true
-        } else {
-            false
-        };
+        let encrypted = root_hint.is_encrypted();
 
         Self {
             backend,
@@ -144,9 +140,9 @@ impl ROHashTree {
                 let (key, mac): (Key128, MAC128) = unsafe {
                     mem::transmute(key_entry)
                 };
-                CacheLoadMeta::Encrypted(key, mac)
+                CacheMissHint::Encrypted(key, mac)
             } else {
-                CacheLoadMeta::IntegrityOnly(key_entry)
+                CacheMissHint::IntegrityOnly(key_entry)
             };
             this_idx_ablk = self.backend.get_blk_hint(child_phy, true, hint)?;
         }

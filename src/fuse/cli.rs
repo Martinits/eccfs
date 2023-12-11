@@ -401,7 +401,13 @@ impl Filesystem for EccFs {
 
 fn main() -> FsResult<()> {
     let path = Path::new("test.blob");
-    let rofs = ro::ROFS::new(path, ro::ROFSMode::IntegrityOnly)?;
+    let rofs = ro::ROFS::new(
+        path,
+        eccfs::FSMode::IntegrityOnly([0u8; 32]),
+        true,
+        true,
+        true,
+    )?;
 
     fuser::mount2(EccFs {
         fs: Box::new(rofs),

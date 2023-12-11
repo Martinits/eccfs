@@ -2,6 +2,7 @@ use std::fs::{File, OpenOptions};
 use std::io::prelude::*;
 use std::io::{ErrorKind, SeekFrom};
 use crate::*;
+use std::path::Path;
 
 pub trait ROStorage: Send + Sync {
     fn read_blk(&mut self, pos: u64) -> FsResult<Block>;
@@ -12,13 +13,13 @@ pub trait RWStorage: ROStorage + Send + Sync {
 }
 
 pub struct FileStorage {
-    path: String,
+    // path: String,
     handle: File,
     writable: bool,
 }
 
 impl FileStorage {
-    pub fn new(path: &String, writable: bool) -> FsResult<Self> {
+    pub fn new(path: &Path, writable: bool) -> FsResult<Self> {
         let handle = OpenOptions::new().read(true).write(writable)
             .open(path).map_err( |e| {
                 Into::<FsError>::into(e.kind() as u64)
@@ -26,7 +27,7 @@ impl FileStorage {
 
         Ok(Self {
             handle,
-            path: path.clone(),
+            // path: path.to_str().unwrap().to_string(),
             writable,
         })
     }
