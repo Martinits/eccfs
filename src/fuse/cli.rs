@@ -404,9 +404,9 @@ fn main() -> FsResult<()> {
     let rofs = ro::ROFS::new(
         path,
         eccfs::FSMode::IntegrityOnly([0u8; 32]),
-        true,
-        true,
-        true,
+        Some(DEFAULT_CACHE_CAP),
+        Some(DEFAULT_CACHE_CAP),
+        Some(DEFAULT_CACHE_CAP),
     )?;
 
     fuser::mount2(EccFs {

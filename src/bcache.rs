@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use crate::storage::{ROStorage, RWStorage};
 use crate::*;
-use crate::blru::BlockLru;
+use crate::lru::Lru;
 use std::sync::mpsc::{self, Sender, Receiver};
 use std::sync::RwLock;
 use std::thread::{self, JoinHandle};
@@ -31,7 +31,7 @@ pub const DEFAULT_CACHE_CAP: usize = 2048;
 
 struct ROCacheServer {
     rx: Receiver<ROCacheReq>,
-    lru: BlockLru<Block>,
+    lru: Lru<u64, Block>,
     capacity: usize,
     backend: Box<dyn ROStorage>,
 }
@@ -111,7 +111,7 @@ impl ROCacheServer {
             rx,
             backend,
             capacity,
-            lru: BlockLru::new(capacity),
+            lru: Lru::new(capacity),
         }
     }
 
@@ -119,7 +119,7 @@ impl ROCacheServer {
         match req {
             ROCacheReq::Get {cachable, reply, pos, miss_hint } => {
                 let send = if cachable {
-                    match self.lru.get(pos) {
+                    match self.lru.get(&pos) {
                         Ok(Some(ablk)) => {
                             Ok(Some(ablk))
                         }
@@ -183,7 +183,7 @@ pub struct RWCache {
 type RWPayLoad = RwLock<Block>;
 struct RWCacheServer {
     rx: Receiver<RWCacheReq>,
-    lru: BlockLru<RWPayLoad>,
+    lru: Lru<u64, RWPayLoad>,
     capacity: usize,
     backend: Box<dyn RWStorage>,
 }
@@ -269,7 +269,7 @@ impl RWCacheServer {
             rx,
             backend,
             capacity,
-            lru: BlockLru::new(capacity),
+            lru: Lru::new(capacity),
         }
     }
 
@@ -277,7 +277,7 @@ impl RWCacheServer {
         match req {
             RWCacheReq::Get { pos, cachable, reply } => {
                 let send = if cachable {
-                    match self.lru.get(pos) {
+                    match self.lru.get(&pos) {
                         Ok(Some(ablk)) => {
                             Ok(ablk)
                         }
@@ -299,7 +299,7 @@ impl RWCacheServer {
                 let mut send = Ok(());
                 if cachable {
                     if let Some(_) = dirty {
-                        send = self.lru.mark_dirty(pos)
+                        send = self.lru.mark_dirty(&pos)
                     }
                 } else if let Some(ablk) = dirty {
                     send = self.backend_dirty(pos, ablk)

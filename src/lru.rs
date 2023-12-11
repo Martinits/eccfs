@@ -1,23 +1,24 @@
 use crate::*;
-use lru::LruCache;
 use std::sync::Arc;
 use std::num::NonZeroUsize;
+extern crate lru;
+use std::hash::Hash;
 
-pub struct BlockLru<T>(LruCache<u64, (Arc<T>, bool)>);
+pub struct Lru<K: Hash + Eq + Clone, V>(lru::LruCache<K, (Arc<V>, bool)>);
 
-impl<T> BlockLru<T> {
+impl<K: Hash + Eq + Clone, V> Lru<K, V> {
     pub fn new(capacity: usize) -> Self {
-        Self(LruCache::new(NonZeroUsize::new(capacity).unwrap()))
+        Self(lru::LruCache::new(NonZeroUsize::new(capacity).unwrap()))
     }
 
-    pub fn get(&mut self, key: u64) -> FsResult<Option<Arc<T>>> {
-        Ok(self.0.get(&key).map(
+    pub fn get(&mut self, key: &K) -> FsResult<Option<Arc<V>>> {
+        Ok(self.0.get(key).map(
             |v| v.0.clone()
         ))
     }
 
-    pub fn mark_dirty(&mut self, key: u64) -> FsResult<()> {
-        if let Some(v) = self.0.get_mut(&key) {
+    pub fn mark_dirty(&mut self, key: &K) -> FsResult<()> {
+        if let Some(v) = self.0.get_mut(key) {
             v.1 = true;
             Ok(())
         } else {
@@ -27,8 +28,8 @@ impl<T> BlockLru<T> {
 
     // just use the argument `val`, no need to get again
     pub fn insert_and_get(
-        &mut self, key: u64, val: &Arc<T>
-    ) -> FsResult<Option<(u64, T)>> {
+        &mut self, key: K, val: &Arc<V>
+    ) -> FsResult<Option<(K, V)>> {
         let mut ret = None;
         if self.0.len() >= self.0.cap().into() {
             // pop tail item
@@ -44,32 +45,34 @@ impl<T> BlockLru<T> {
     }
 
     // pop first entry by LRU rules, return it for write back if it's dirty
-    fn pop_lru(&mut self) -> FsResult<Option<(u64, T)>> {
-        if let Some((&k, _)) = self.0.iter().rev().find(
-            |&(_, v)| Arc::<T>::strong_count(&v.0) == 1
-        ) {
-            let (k, (alock, dirty)) = self.0.pop_entry(&k).unwrap();
-            if dirty {
-                if let Some(payload) = Arc::<T>::into_inner(alock) {
-                    // return payload for write back
-                    Ok(Some((k, payload)))
-                } else {
-                    Err(FsError::UnknownError)
-                }
+    fn pop_lru(&mut self) -> FsResult<Option<(K, V)>> {
+        let res = self.0.iter().rev().find(
+            |&(_, v)| Arc::<V>::strong_count(&v.0) == 1
+        );
+        if res.is_none() {
+            return Err(FsError::CacheIsFull);
+        }
+
+        let k = res.unwrap().0.clone();
+        let (k, (alock, dirty)) = self.0.pop_entry(&k).unwrap();
+        if dirty {
+            if let Some(payload) = Arc::<V>::into_inner(alock) {
+                // return payload for write back
+                Ok(Some((k, payload)))
             } else {
-                Ok(None)
+                Err(FsError::UnknownError)
             }
         } else {
-            Err(FsError::CacheIsFull)
+            Ok(None)
         }
     }
 
     // get a vector of keys of all entries that is not referenced
-    fn get_all_unused(&self) -> Vec<u64> {
+    fn get_all_unused(&self) -> Vec<K> {
         self.0.iter().filter_map(
-            |(&k, arc)| {
-                if Arc::<T>::strong_count(&arc.0) == 1 {
-                    Some(k)
+            |(k, arc)| {
+                if Arc::<V>::strong_count(&arc.0) == 1 {
+                    Some(k.clone())
                 } else {
                     None
                 }
@@ -87,12 +90,12 @@ impl<T> BlockLru<T> {
     }
 
     // flush all entries that is not referenced, return dirty ones
-    pub fn flush_wb(&mut self) -> Vec<(u64, T)> {
-        self.get_all_unused().iter().filter_map(
-            |&k| {
+    pub fn flush_wb(&mut self) -> Vec<(K, V)> {
+        self.get_all_unused().into_iter().filter_map(
+            |k| {
                 let (arc, dirty) = self.0.pop(&k).unwrap();
                 if dirty {
-                    let payload = Arc::<T>::into_inner(arc).unwrap();
+                    let payload = Arc::<V>::into_inner(arc).unwrap();
                     // return payload for write back
                     Some((k, payload))
                 } else {

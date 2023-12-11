@@ -15,6 +15,7 @@ use inode::Inode;
 use crate::bcache::*;
 use crate::storage::*;
 use crate::crypto::*;
+use crate::lru::Lru;
 
 
 pub struct ROFS {
@@ -25,17 +26,17 @@ pub struct ROFS {
     dirent_tbl: ROHashTree,
     path_tbl: ROHashTree,
     files: RwLock<HashMap<u64, ROHashTree>>,
-    icac: Option<RwLock<HashMap<InodeID, Inode>>>,
-    de_cac: Option<RwLock<HashMap<String, InodeID>>>,
+    icac: Option<RwLock<Lru<InodeID, Inode>>>,
+    de_cac: Option<RwLock<Lru<String, InodeID>>>,
 }
 
 impl ROFS {
     pub fn new(
         path: &Path,
         mode: FSMode,
-        cache_data: bool,
-        cache_inode: bool,
-        cache_de: bool,
+        cache_data: Option<usize>,
+        cache_inode: Option<usize>,
+        cache_de: Option<usize>,
     ) -> FsResult<Self> {
         let mut storage = FileStorage::new(path, false)?;
 
@@ -44,7 +45,10 @@ impl ROFS {
         let sb = SuperBlock::new(mode.clone(), sb_blk)?;
 
         // start cache channel server
-        let cac = ROCache::new(Box::new(storage), DEFAULT_CACHE_CAP);
+        let cac = ROCache::new(
+            Box::new(storage),
+            cache_data.unwrap_or(DEFAULT_CACHE_CAP)
+        );
 
         // get hash trees
         let inode_tbl = ROHashTree::new(
@@ -52,33 +56,41 @@ impl ROFS {
             sb.inode_tbl_start,
             sb.inode_tbl_len,
             FSMode::from_key_entry(sb.inode_tbl_key, mode.is_encrypted()),
-            cache_data,
+            cache_data.is_some(),
         );
         let dirent_tbl = ROHashTree::new(
             cac.clone(),
             sb.dirent_tbl_start,
             sb.dirent_tbl_len,
             FSMode::from_key_entry(sb.dirent_tbl_key, mode.is_encrypted()),
-            cache_data,
+            cache_data.is_some(),
         );
         let path_tbl = ROHashTree::new(
             cac.clone(),
             sb.path_tbl_start,
             sb.path_tbl_len,
             FSMode::from_key_entry(sb.path_tbl_key, mode.is_encrypted()),
-            cache_data,
+            cache_data.is_some(),
         );
 
         Ok(ROFS {
             mode,
             sb: RwLock::new(sb),
-            cache_data,
+            cache_data: cache_data.is_some(),
             inode_tbl,
             dirent_tbl,
             path_tbl,
             files: Default::default(),
-            icac: cache_inode.then(|| RwLock::new(HashMap::new())),
-            de_cac: cache_de.then(|| RwLock::new(HashMap::new())),
+            icac: if let Some(cap) = cache_inode {
+                Some(RwLock::new(Lru::new(cap)))
+            } else {
+                None
+            },
+            de_cac: if let Some(cap) = cache_de {
+                Some(RwLock::new(Lru::new(cap)))
+            } else {
+                None
+            },
         })
     }
 }
@@ -121,7 +133,7 @@ impl FileSystem for ROFS {
     }
 
     fn fallocate(&self, inode: InodeID, mode: FallocateMode, offset: usize, len: usize) -> FsResult<()> {
-        unimplemented!();
+        Err(FsError::Unsupported)
     }
 
     fn isync_data(&self, inode: InodeID) -> FsResult<()> {
@@ -133,23 +145,23 @@ impl FileSystem for ROFS {
     }
 
     fn create(&self, inode: InodeID, name: &OsStr, ftype: FileType, perm: u16) -> FsResult<InodeID> {
-        unimplemented!();
+        Err(FsError::Unsupported)
     }
 
     fn link(&self, newparent: InodeID, newname: &OsStr, linkto: InodeID) -> FsResult<InodeID> {
-        unimplemented!();
+        Err(FsError::Unsupported)
     }
 
     fn unlink(&self, inode: InodeID, name: &OsStr) -> FsResult<()> {
-        unimplemented!();
+        Err(FsError::Unsupported)
     }
 
     fn symlink(&self, inode: InodeID, name: &OsStr, to: &Path) -> FsResult<InodeID> {
-        unimplemented!();
+        Err(FsError::Unsupported)
     }
 
     fn rename(&self, inode: InodeID, name: &OsStr, to: InodeID, newname: &OsStr) -> FsResult<()> {
-        unimplemented!();
+        Err(FsError::Unsupported)
     }
 
     fn lookup(&self, inode: InodeID, name: &OsStr) -> FsResult<Option<InodeID>> {
@@ -159,4 +171,8 @@ impl FileSystem for ROFS {
     fn listdir(&self, inode: InodeID) -> FsResult<Vec<(InodeID, String, FileType)>> {
         unimplemented!();
     }
+}
+
+fn iid_split(iid: InodeID) -> (u64, u16) {
+    (iid & 0x0ffffffffffff, (iid >> 48) as u16)
 }

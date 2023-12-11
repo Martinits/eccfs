@@ -6,9 +6,10 @@ pub(crate) mod bcache;
 pub(crate) mod htree;
 pub(crate) mod storage;
 pub(crate) mod crypto;
-pub(crate) mod blru;
+pub(crate) mod lru;
 pub mod error;
 pub use error::*;
+pub use bcache::DEFAULT_CACHE_CAP;
 use crypto::*;
 use std::mem;
 
@@ -78,5 +79,12 @@ macro_rules! rw_as_blob {
     ($T: ty) => {
         crate::read_from_blob!($T);
         crate::write_to_blob!($T);
+    };
+}
+
+#[macro_export]
+macro_rules! mutex_lock {
+    ($mu: expr) => {
+        $mu.lock().map_err(|_| FsError::MutexError)?
     };
 }

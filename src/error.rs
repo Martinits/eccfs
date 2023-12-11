@@ -47,6 +47,7 @@ pub enum FsError {
     ChannelSendError,
     ChannelRecvError,
     RwLockError,
+    MutexError,
     CacheNeedHint,
 
     UnknownError,
@@ -164,7 +165,8 @@ impl Into<c_int> for FsError {
             FsError::ChannelSendError => 263 as c_int,
             FsError::ChannelRecvError => 264 as c_int,
             FsError::RwLockError => 265 as c_int,
-            FsError::CacheNeedHint => 266 as c_int,
+            FsError::MutexError => 266 as c_int,
+            FsError::CacheNeedHint => 267 as c_int,
 
             FsError::UnknownError => 511 as c_int,
         }

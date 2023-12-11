@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use crate::bcache::*;
 use crate::*;
 use crate::crypto::*;
@@ -67,7 +67,7 @@ mod mht {
 // use features to separate impls for SGX and TDX+FUSE
 // for TDX+FUSE deployment, only cache index blocks, kernel will handle the left cache
 pub struct ROHashTree {
-    backend: ROCache,
+    backend: Mutex<ROCache>,
     start: u64,
     length: u64,
     encrypted: bool,
@@ -86,7 +86,7 @@ impl ROHashTree {
         let encrypted = root_hint.is_encrypted();
 
         Self {
-            backend,
+            backend: Mutex::new(backend),
             start,
             length,
             encrypted,
@@ -102,7 +102,7 @@ impl ROHashTree {
         }
 
         let data_phy = mht::logi2phy(pos);
-        if let Some(ablk) = self.backend.get_blk(data_phy, self.cache_data)? {
+        if let Some(ablk) = mutex_lock!(self.backend).get_blk(data_phy, self.cache_data)? {
             return Ok(ablk)
         }
 
@@ -113,14 +113,14 @@ impl ROHashTree {
 
         let first_cached_idx = if idxphy == 0 {
             // data is under root idx
-            self.backend.get_blk_hint(idxphy, true, self.root_hint.clone())?
+            mutex_lock!(self.backend).get_blk_hint(idxphy, true, self.root_hint.clone())?
         } else {
             // find backward through the tree to the first cached idx blk
             let mut safe_cnt = 0;
             loop {
                 if safe_cnt >= MAX_LOOP_CNT {
                     panic!("Loop exceeds MAX count!");
-                } else if let Some(ablk) = self.backend.get_blk(idxphy, true)? {
+                } else if let Some(ablk) = mutex_lock!(self.backend).get_blk(idxphy, true)? {
                     break ablk;
                 } else {
                     let (father, child_idx) = mht::idxphy2father(idxphy);
@@ -144,7 +144,7 @@ impl ROHashTree {
             } else {
                 CacheMissHint::IntegrityOnly(key_entry)
             };
-            this_idx_ablk = self.backend.get_blk_hint(child_phy, true, hint)?;
+            this_idx_ablk = mutex_lock!(self.backend).get_blk_hint(child_phy, true, hint)?;
         }
         let data_ablk = this_idx_ablk;
         Ok(data_ablk)
@@ -152,7 +152,7 @@ impl ROHashTree {
 
     // flush all blocks including root
     pub fn flush(&mut self) -> FsResult<()> {
-        self.backend.flush()
+        self.backend.lock().map_err(|_| FsError::MutexError)?.flush()
     }
 }
 
