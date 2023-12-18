@@ -16,7 +16,7 @@ use std::mem;
 
 pub const MAX_LOOP_CNT: u64 = 10001;
 
-pub const BLK_SZ: u64 = 4096;
+pub const BLK_SZ: usize = 4096;
 pub type Block = [u8; 4096];
 
 pub const ROOT_INODE_ID: u64 = 1;

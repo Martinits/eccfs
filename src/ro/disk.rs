@@ -1,72 +1,90 @@
 use crate::rw_as_blob;
 use std::mem::size_of;
+use crate::vfs::*;
+
+pub fn get_ftype_from_mode(mode: u16) -> FileType {
+    match mode >> 12 {
+        0 => FileType::Reg,
+        1 => FileType::Dir,
+        2 => FileType::Lnk,
+        _ => panic!("Unexpected FileType in mode bits!"),
+    }
+}
+
+pub fn get_perm_from_mode(mode: u16) -> FilePerm {
+    FilePerm::from_bits(mode & 0x0fff).unwrap()
+}
 
 #[repr(C)]
-struct DInodeBase {
-    /// file size(regular file), dir-entry num(dir), or name length(symbolic link)
-    size: u64,
-
-    /// uid
-    uid: u32,
-
-    /// gid
-    gid: u32,
-
-    /// access time
-    atime: u32,
-
-    /// create time
-    ctime: u32,
-
-    /// modiied time
-    mtime: u32,
-
-     /// mode bits, one byte for FTYPE and 3 for UGO RWX permissions
-    mode: u16,
+#[derive(Default)]
+pub struct DInodeBase {
+    /// mode bits, 4 bits for FTYPE and 12 for UGO RWX permissions
+    /// FTYPE: 0 - reg, 1 - dir, 2 - lnk
+    pub mode: u16,
 
     /// number of hard links
-    nlinks: u16,
+    pub nlinks: u16,
+
+    /// uid
+    pub uid: u32,
+
+    /// gid
+    pub gid: u32,
+
+    /// access time
+    pub atime: u32,
+
+    /// create time
+    pub ctime: u32,
+
+    /// modiied time
+    pub mtime: u32,
+
+    /// file size(regular file), dir-entry num(dir), or name length(symbolic link)
+    pub size: u64,
 }
 rw_as_blob!(DInodeBase);
 
 #[repr(C)]
+#[derive(Default)]
 pub struct DInodeReg {
-    base: DInodeBase,
+    pub base: DInodeBase,
 
     /// 128bit key + 128bit MAC for encrypted mode
     /// 256bit HASH for integrity only mode
-    crypto_blob: [u8; 32],
+    pub crypto_blob: [u8; 32],
 
-    /// first block of file data (i.e. the Hash Tree)
-    data_start: u64,
+    /// first block of file data, i.e. the Hash Tree
+    pub data_start: u64,
 
-    /// padding
-    _padding: u64,
+    /// total blocks of data section, i.e. the Hash Tree
+    pub data_len : u64,
 }
 rw_as_blob!(DInodeReg);
 
 #[repr(C)]
-struct EntryIndex {
+#[derive(Clone)]
+pub struct EntryIndex {
     /// entry hash
-    hash: u64,
+    pub hash: u64,
 
     /// start position in entry list
-    position: u32,
+    pub position: u32,
 
     /// number of entry after this index
-    group_len: u32,
+    pub group_len: u32,
 }
 rw_as_blob!(EntryIndex);
 
 #[repr(C)]
-struct DInodeDirBase {
-    base: DInodeBase,
+pub struct DInodeDirBase {
+    pub base: DInodeBase,
 
     /// first block of dir entry list in dir entry table
-    data_start: u32,
+    pub data_start: u32,
 
     /// number of entry index
-    nr_idx: u32,
+    pub nr_idx: u32,
 
     /// padding
     _padding: u64,
@@ -74,10 +92,10 @@ struct DInodeDirBase {
 
 #[repr(C)]
 pub struct DInodeDir {
-    dir_base: DInodeDirBase,
+    pub dir_base: DInodeDirBase,
 
     /// index list
-    idx_list: [EntryIndex],
+    pub idx_list: [EntryIndex],
 }
 // rw_as_blob
 impl AsRef<[u8]> for DInodeDir {
@@ -106,13 +124,13 @@ impl AsMut<[u8]> for DInodeDir {
 }
 
 #[repr(C)]
-pub struct DInodeSym {
-    base: DInodeBase,
+pub struct DInodeLnk {
+    pub base: DInodeBase,
 
     /// name
-    name: [u8; 32],
+    pub name: [u8; 32],
 }
-rw_as_blob!(DInodeSym);
+rw_as_blob!(DInodeLnk);
 
 
 mod test {
@@ -134,7 +152,7 @@ mod test {
             },
             crypto_blob: [8; 32],
             data_start: 64,
-            _padding: 0,
+            data_len: 0,
         };
 
         let mut f = OpenOptions::new()
@@ -157,7 +175,7 @@ mod test {
         assert_eq!(a.base.mode, 7);
         assert_eq!(a.base.nlinks, 16);
         assert_eq!(a.data_start, 64);
-        assert_eq!(a._padding, 0);
+        assert_eq!(a.data_len, 0);
         assert_eq!(a.crypto_blob, [8; 32]);
     }
 }

@@ -10,7 +10,7 @@ mod mht {
     use crate::*;
     use crate::crypto::*;
 
-    const ENTRY_PER_BLK: u64 = BLK_SZ / KEY_ENTRY_SZ as u64;
+    const ENTRY_PER_BLK: u64 = BLK_SZ as u64 / KEY_ENTRY_SZ as u64;
     const CHILD_PER_BLK: u64 = ENTRY_PER_BLK * 1 / 4;
     const DATA_PER_BLK: u64 = ENTRY_PER_BLK * 3 / 4;
 
@@ -96,7 +96,7 @@ impl ROHashTree {
     }
 
     // pos is by block
-    pub fn get_blk(&mut self, pos: u64) -> FsResult<Arc<Block>> {
+    pub fn get_blk(&self, pos: u64) -> FsResult<Arc<Block>> {
         if pos >= self.length {
             return Err(FsError::FileTooLarge)
         }
@@ -151,7 +151,7 @@ impl ROHashTree {
     }
 
     // flush all blocks including root
-    pub fn flush(&mut self) -> FsResult<()> {
+    pub fn flush(&self) -> FsResult<()> {
         self.backend.lock().map_err(|_| FsError::MutexError)?.flush()
     }
 }

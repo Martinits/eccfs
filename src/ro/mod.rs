@@ -3,31 +3,28 @@ pub mod inode;
 pub mod disk;
 
 use crate::vfs::*;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Mutex};
 use std::path::Path;
-use crate::crypto::Key128;
 use crate::*;
 use std::ffi::OsStr;
 use superblock::*;
 use crate::htree::*;
-use std::collections::HashMap;
-use inode::Inode;
+use inode::*;
 use crate::bcache::*;
 use crate::storage::*;
-use crate::crypto::*;
 use crate::lru::Lru;
 
 
 pub struct ROFS {
     mode: FSMode,
     cache_data: bool,
+    backend: ROCache,
     sb: RwLock<SuperBlock>,
-    inode_tbl: ROHashTree,
-    dirent_tbl: ROHashTree,
-    path_tbl: ROHashTree,
-    files: RwLock<HashMap<u64, ROHashTree>>,
-    icac: Option<RwLock<Lru<InodeID, Inode>>>,
-    de_cac: Option<RwLock<Lru<String, InodeID>>>,
+    inode_tbl: Mutex<ROHashTree>,
+    dirent_tbl: Mutex<ROHashTree>,
+    path_tbl: Mutex<ROHashTree>,
+    icac: Option<Mutex<Lru<InodeID, Inode>>>,
+    de_cac: Option<Mutex<Lru<String, InodeID>>>,
 }
 
 impl ROFS {
@@ -76,22 +73,43 @@ impl ROFS {
         Ok(ROFS {
             mode,
             sb: RwLock::new(sb),
+            backend: cac,
             cache_data: cache_data.is_some(),
-            inode_tbl,
-            dirent_tbl,
-            path_tbl,
-            files: Default::default(),
+            inode_tbl: Mutex::new(inode_tbl),
+            dirent_tbl: Mutex::new(dirent_tbl),
+            path_tbl: Mutex::new(path_tbl),
             icac: if let Some(cap) = cache_inode {
-                Some(RwLock::new(Lru::new(cap)))
+                Some(Mutex::new(Lru::new(cap)))
             } else {
                 None
             },
             de_cac: if let Some(cap) = cache_de {
-                Some(RwLock::new(Lru::new(cap)))
+                Some(Mutex::new(Lru::new(cap)))
             } else {
                 None
             },
         })
+    }
+
+    fn fetch_inode(&mut self, iid: InodeID) -> FsResult<Inode> {
+        let (bpos, offset) = iid_split(iid);
+        let ablk = mutex_lock!(self.inode_tbl).get_blk(bpos)?;
+        Inode::new_from_raw(
+            &ablk[offset as usize..],
+            self.backend.clone(),
+            self.mode.is_encrypted(),
+            self.cache_data,
+        )
+    }
+
+    fn get_inode(&mut self, iid: InodeID) -> FsResult<Arc<Inode>> {
+        if let Some(mu_icac) = &self.icac {
+            unimplemented!();
+        } else {
+            // no icac
+            let inode = self.fetch_inode(iid)?;
+            Ok(Arc::new(inode))
+        }
     }
 }
 
@@ -112,8 +130,9 @@ impl FileSystem for ROFS {
         unimplemented!();
     }
 
-    fn iread(&self, inode: InodeID, offset: usize, to: &mut [u8]) -> FsResult<usize> {
-        unimplemented!();
+    fn iread(&mut self, inode: InodeID, offset: usize, to: &mut [u8]) -> FsResult<usize> {
+        let inode = self.get_inode(inode)?;
+        inode.read_data(offset, to)
     }
 
     fn iwrite(&self, inode: InodeID, offset: usize, from: &[u8]) -> FsResult<usize> {

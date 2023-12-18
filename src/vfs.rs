@@ -3,6 +3,7 @@ use crate::*;
 use std::ffi::OsStr;
 use std::time::SystemTime;
 use std::path::Path;
+use bitflags::bitflags;
 
 /// for ROFS, 16bit block offset + 48bit block position
 pub type InodeID = u64;
@@ -43,7 +44,7 @@ pub trait FileSystem: Sync + Send {
     fn fsync(&self) -> FsResult<()>;
 
     /// read content of inode
-    fn iread(&self, inode: InodeID, offset: usize, to: &mut [u8]) -> FsResult<usize>;
+    fn iread(&mut self, inode: InodeID, offset: usize, to: &mut [u8]) -> FsResult<usize>;
 
     /// write content of inode
     fn iwrite(&self, inode: InodeID, offset: usize, from: &[u8]) -> FsResult<usize>;
@@ -108,6 +109,20 @@ impl Into<fuser::FileType> for FileType {
             FileType::Dir => fuser::FileType::Directory,
             FileType::Lnk => fuser::FileType::Symlink,
         }
+    }
+}
+
+bitflags! {
+    pub struct FilePerm: u16 {
+        const U_R = 0x0400;
+        const U_W = 0x0200;
+        const U_X = 0x0100;
+        const G_R = 0x0040;
+        const G_W = 0x0020;
+        const G_X = 0x0010;
+        const O_R = 0x0004;
+        const O_W = 0x0002;
+        const O_X = 0x0001;
     }
 }
 

@@ -40,7 +40,7 @@ impl ROStorage for FileStorage {
         if position != pos * BLK_SZ as u64 {
             Err(FsError::NotSeekable)
         } else {
-            let mut blk = [0u8; BLK_SZ as usize] as Block;
+            let mut blk = [0u8; BLK_SZ] as Block;
             self.handle.read_exact(&mut blk).map_err(
                 |e| Into::<FsError>::into(e)
             )?;

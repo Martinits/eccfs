@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 aes-gcm = "0.10.3"
+bitflags = "2.4.1"
 crypto = "0.5.1"
 fuser = "0.13"
 libc = "0.2.149"
