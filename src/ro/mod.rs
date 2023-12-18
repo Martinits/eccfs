@@ -135,24 +135,12 @@ impl FileSystem for ROFS {
         inode.read_data(offset, to)
     }
 
-    fn iwrite(&self, inode: InodeID, offset: usize, from: &[u8]) -> FsResult<usize> {
-        Err(FsError::Unsupported)
-    }
-
     fn get_meta(&self, inode: InodeID) -> FsResult<Metadata> {
         unimplemented!();
     }
 
-    fn set_meta(&self, inode: InodeID, set_md: SetMetadata) -> FsResult<()> {
-        Err(FsError::Unsupported)
-    }
-
     fn iread_link(&self, inode: InodeID) -> FsResult<String> {
         unimplemented!();
-    }
-
-    fn fallocate(&self, inode: InodeID, mode: FallocateMode, offset: usize, len: usize) -> FsResult<()> {
-        Err(FsError::Unsupported)
     }
 
     fn isync_data(&self, inode: InodeID) -> FsResult<()> {
@@ -161,26 +149,6 @@ impl FileSystem for ROFS {
 
     fn isync_meta(&self, inode: InodeID) -> FsResult<()> {
         unimplemented!();
-    }
-
-    fn create(&self, inode: InodeID, name: &OsStr, ftype: FileType, perm: u16) -> FsResult<InodeID> {
-        Err(FsError::Unsupported)
-    }
-
-    fn link(&self, newparent: InodeID, newname: &OsStr, linkto: InodeID) -> FsResult<InodeID> {
-        Err(FsError::Unsupported)
-    }
-
-    fn unlink(&self, inode: InodeID, name: &OsStr) -> FsResult<()> {
-        Err(FsError::Unsupported)
-    }
-
-    fn symlink(&self, inode: InodeID, name: &OsStr, to: &Path) -> FsResult<InodeID> {
-        Err(FsError::Unsupported)
-    }
-
-    fn rename(&self, inode: InodeID, name: &OsStr, to: InodeID, newname: &OsStr) -> FsResult<()> {
-        Err(FsError::Unsupported)
     }
 
     fn lookup(&self, inode: InodeID, name: &OsStr) -> FsResult<Option<InodeID>> {

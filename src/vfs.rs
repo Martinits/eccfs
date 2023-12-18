@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use crate::*;
 use std::ffi::OsStr;
 use std::time::SystemTime;
@@ -32,61 +31,111 @@ pub struct FsInfo {
 
 pub trait FileSystem: Sync + Send {
     /// init fs
-    fn init(&self) -> FsResult<()>;
+    fn init(&self) -> FsResult<()> {
+        Err(FsError::Unsupported)
+    }
 
     /// destroy this fs,  called before all worklaods are finished for this fs
-    fn destroy(&self) -> FsResult<()>;
+    fn destroy(&self) -> FsResult<()> {
+        Err(FsError::Unsupported)
+    }
 
     /// get fs stat info in superblock
-    fn finfo(&self) -> FsResult<FsInfo>;
+    fn finfo(&self) -> FsResult<FsInfo> {
+        Err(FsError::Unsupported)
+    }
 
     /// sync all filesystem, including metadata and user data
-    fn fsync(&self) -> FsResult<()>;
+    fn fsync(&self) -> FsResult<()> {
+        Err(FsError::Unsupported)
+    }
 
     /// read content of inode
-    fn iread(&mut self, inode: InodeID, offset: usize, to: &mut [u8]) -> FsResult<usize>;
+    fn iread(&mut self, _inode: InodeID, _offset: usize, _to: &mut [u8]) -> FsResult<usize> {
+        Err(FsError::Unsupported)
+    }
 
     /// write content of inode
-    fn iwrite(&self, inode: InodeID, offset: usize, from: &[u8]) -> FsResult<usize>;
+    fn iwrite(&self, _inode: InodeID, _offset: usize, _from: &[u8]) -> FsResult<usize> {
+        Err(FsError::Unsupported)
+    }
 
     /// get metadata of inode
-    fn get_meta(&self, inode: InodeID) -> FsResult<Metadata>;
+    fn get_meta(&self, _inode: InodeID) -> FsResult<Metadata> {
+        Err(FsError::Unsupported)
+    }
 
     /// set metadata of inode
-    fn set_meta(&self, inode: InodeID, set_md: SetMetadata) -> FsResult<()>;
+    fn set_meta(&self, _inode: InodeID, _set_md: SetMetadata) -> FsResult<()> {
+        Err(FsError::Unsupported)
+    }
 
     /// read symlink only if inode is a SymLink
-    fn iread_link(&self, inode: InodeID) -> FsResult<String>;
+    fn iread_link(&self, _inode: InodeID) -> FsResult<String> {
+        Err(FsError::Unsupported)
+    }
 
     /// sync metadata of this inode
-    fn isync_meta(&self, inode: InodeID) -> FsResult<()>;
+    fn isync_meta(&self, _inode: InodeID) -> FsResult<()> {
+        Err(FsError::Unsupported)
+    }
 
     /// sync user data of this inode
-    fn isync_data(&self, inode: InodeID) -> FsResult<()>;
+    fn isync_data(&self, _inode: InodeID) -> FsResult<()> {
+        Err(FsError::Unsupported)
+    }
 
     /// create inode
-    fn create(&self, inode: InodeID, name: &OsStr, ftype: FileType, perm: u16) -> FsResult<InodeID>;
+    fn create(
+        &self,
+        _inode: InodeID,
+        _name: &OsStr,
+        _ftype: FileType,
+        _perm: u16,
+    ) -> FsResult<InodeID> {
+        Err(FsError::Unsupported)
+    }
 
     /// create hard link
-    fn link(&self, newparent: InodeID, newname: &OsStr, linkto: InodeID) -> FsResult<InodeID>;
+    fn link(&self, _newparent: InodeID, _newname: &OsStr, _linkto: InodeID) -> FsResult<InodeID> {
+        Err(FsError::Unsupported)
+    }
 
     /// remove a link to inode
-    fn unlink(&self, inode: InodeID, name: &OsStr) -> FsResult<()>;
+    fn unlink(&self, _inode: InodeID, _name: &OsStr) -> FsResult<()> {
+        Err(FsError::Unsupported)
+    }
 
     /// create symlink
-    fn symlink(&self, inode: InodeID, name: &OsStr, to: &Path) -> FsResult<InodeID>;
+    fn symlink(&self, _inode: InodeID, _name: &OsStr, _to: &Path) -> FsResult<InodeID> {
+        Err(FsError::Unsupported)
+    }
 
     /// move `inode/name` to `to/newname`
-    fn rename(&self, inode: InodeID, name: &OsStr, to: InodeID, newname: &OsStr) -> FsResult<()>;
+    fn rename(&self, _inode: InodeID, _name: &OsStr, _to: InodeID, _newname: &OsStr) -> FsResult<()> {
+        Err(FsError::Unsupported)
+    }
 
     /// lookup name in inode only if inode is a dir
-    fn lookup(&self, inode: InodeID, name: &OsStr) -> FsResult<Option<InodeID>>;
+    fn lookup(&self, _inode: InodeID, _name: &OsStr) -> FsResult<Option<InodeID>> {
+        Err(FsError::Unsupported)
+    }
 
     /// list all entries in inode only if it's a dir
-    fn listdir(&self, inode: InodeID) -> FsResult<Vec<(InodeID, String, FileType)>>;
+    fn listdir(&self, _inode: InodeID) -> FsResult<Vec<(InodeID, String, FileType)>> {
+        Err(FsError::Unsupported)
+    }
 
     /// fallocate
-    fn fallocate(&self, inode: InodeID, mode: FallocateMode, offset: usize, len: usize) -> FsResult<()>;
+    fn fallocate(
+        &self,
+        _inode: InodeID,
+        _mode: FallocateMode,
+        _offset: usize,
+        _len: usize,
+    ) -> FsResult<()> {
+        Err(FsError::Unsupported)
+    }
 }
 
 // #[derive(Default, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
