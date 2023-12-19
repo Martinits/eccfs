@@ -68,8 +68,8 @@ mod mht {
 // for TDX+FUSE deployment, only cache index blocks, kernel will handle the left cache
 pub struct ROHashTree {
     backend: Mutex<ROCache>,
-    start: u64,
-    length: u64,
+    start: u64, // in blocks
+    length: u64, // in blocks
     encrypted: bool,
     cache_data: bool,
     root_hint: CacheMissHint,
@@ -78,8 +78,8 @@ pub struct ROHashTree {
 impl ROHashTree {
     pub fn new(
         backend: ROCache,
-        start: u64, // in blocks
-        length: u64, // in blocks
+        start: u64,
+        length: u64,
         root_hint: CacheMissHint,
         cache_data: bool,
     ) -> Self {

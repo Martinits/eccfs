@@ -127,7 +127,7 @@ impl ROFS {
     }
 
     fn get_dir_ent_name(&self, de: &DirEntry) -> FsResult<String> {
-        let DirEntry {ipos, len, tp, name, ..} = de;
+        let DirEntry {len, name, ..} = de;
         let name = if *len as usize > name.len() {
             let pos = u64::from_le_bytes(name[..8].try_into().unwrap());
             let mut buf = vec![0u8; *len as usize];

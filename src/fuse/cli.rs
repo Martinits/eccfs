@@ -1,6 +1,6 @@
 use fuser::*;
 use std::time::SystemTime;
-use libc::{ENOSYS, c_int};
+use libc::c_int;
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
 use eccfs::*;
