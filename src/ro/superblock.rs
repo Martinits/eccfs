@@ -40,7 +40,7 @@ pub struct SuperBlock {
     pub files: usize,
     /// Total number of free file serial numbers
     pub ffree: usize,
-    /// Maximum filename length
+    /// Maximum filename length, as for dirent structure, it's 65535 (max of u16)
     pub namemax: usize,
     /// Fundamental file system block size
     pub frsize: usize,

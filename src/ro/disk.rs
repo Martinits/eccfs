@@ -3,12 +3,7 @@ use std::mem::size_of;
 use crate::vfs::*;
 
 pub fn get_ftype_from_mode(mode: u16) -> FileType {
-    match mode >> 12 {
-        0 => FileType::Reg,
-        1 => FileType::Dir,
-        2 => FileType::Lnk,
-        _ => panic!("Unexpected FileType in mode bits!"),
-    }
+    FileType::from((mode >> 12) as u8)
 }
 
 pub fn get_perm_from_mode(mode: u16) -> FilePerm {
@@ -75,6 +70,17 @@ pub struct EntryIndex {
     pub group_len: u32,
 }
 rw_as_blob!(EntryIndex);
+
+#[repr(C)]
+#[derive(Default, Clone)]
+pub struct DirEntry {
+    pub hash: u64,
+    pub ipos: u64,
+    pub len: u16,
+    pub tp: u16,
+    pub name: [u8; 12],
+}
+rw_as_blob!(DirEntry);
 
 #[repr(C)]
 pub struct DInodeDirBase {

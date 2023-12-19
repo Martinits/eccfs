@@ -13,6 +13,9 @@ use inode::*;
 use crate::bcache::*;
 use crate::storage::*;
 use crate::lru::Lru;
+use disk::*;
+use std::mem::size_of;
+use crate::crypto::half_md4;
 
 
 pub struct ROFS {
@@ -122,13 +125,31 @@ impl ROFS {
             Ok(Arc::new(inode))
         }
     }
+
+    fn get_dir_ent_name(&self, de: &DirEntry) -> FsResult<String> {
+        let DirEntry {ipos, len, tp, name, ..} = de;
+        let name = if *len as usize > name.len() {
+            let pos = u64::from_le_bytes(name[..8].try_into().unwrap());
+            let mut buf = vec![0u8; *len as usize];
+
+            let read = mutex_lock!(self.path_tbl)
+                        .read_exact(pos as usize, buf.as_mut_slice())?;
+            if read != *len as usize {
+                return Err(FsError::InvalidData)
+            }
+            String::from_utf8(buf).map_err(|_| FsError::InvalidData)?
+        } else {
+            std::str::from_utf8(
+                name.split_at(*len as usize).0
+            ).map_err(
+                |_| FsError::InvalidData
+            )?.into()
+        };
+        Ok(name)
+    }
 }
 
 impl FileSystem for ROFS {
-    fn destroy(&self) -> FsResult<()> {
-        self.fsync()
-    }
-
     fn finfo(&self) -> FsResult<FsInfo> {
         rwlock_read!(self.sb).get_fsinfo()
     }
@@ -180,11 +201,50 @@ impl FileSystem for ROFS {
     }
 
     fn lookup(&self, iid: InodeID, name: &OsStr) -> FsResult<Option<InodeID>> {
-        unimplemented!();
+        if let Some((mut pos, len)) = self.get_inode(iid)?.lookup_index(name)? {
+            let step = size_of::<DirEntry>();
+            let mut done = 0;
+            while done < len {
+                let ablk = mutex_lock!(self.dirent_tbl).get_blk((pos / BLK_SZ) as u64)?;
+                let round = (len - done).min((BLK_SZ - pos % BLK_SZ) / step);
+                let ents = unsafe {
+                    std::slice::from_raw_parts(
+                        ablk[pos%BLK_SZ..].as_ptr() as *const DirEntry, round)
+                };
+                let hash = half_md4(name.as_encoded_bytes())?;
+                for ent in ents.iter().filter(
+                    |ent| ent.hash == hash
+                ) {
+                    let real_name = self.get_dir_ent_name(ent)?;
+                    if real_name.as_str() == name {
+                        return Ok(Some(ent.ipos))
+                    }
+                }
+                done += round;
+                pos += step * round;
+            }
+        }
+        Ok(None)
     }
 
     fn listdir(&self, iid: InodeID) -> FsResult<Vec<(InodeID, String, FileType)>> {
-        unimplemented!();
+        let (start, num) = self.get_inode(iid)?.get_entry_list_info()?;
+
+        let mut list = vec![DirEntry::default(); num];
+        let to = unsafe { std::slice::from_raw_parts_mut(list.as_mut_ptr() as *mut u8, num) };
+        let read = mutex_lock!(self.dirent_tbl).read_exact(start as usize * BLK_SZ, to)?;
+
+        if read != num {
+            Err(FsError::InvalidData)
+        } else {
+            let mut ret = Vec::with_capacity(num);
+            for ent in list.into_iter() {
+                let name = self.get_dir_ent_name(&ent)?;
+
+                ret.push((ent.ipos, name, FileType::from(ent.tp as u8)));
+            }
+            Ok(ret)
+        }
     }
 }
 

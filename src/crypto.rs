@@ -4,6 +4,7 @@ use aes_gcm::{
 };
 use sha3::{Digest, Sha3_256};
 use crate::*;
+use md4::Md4;
 
 type Nonce96 = [u8; 12];
 pub type Key128 = [u8; 16];
@@ -84,6 +85,18 @@ pub fn aes_gcm_128_blk_dec(
     Ok(())
 }
 
+pub fn half_md4(buf: &[u8]) -> FsResult<u64> {
+    let mut hasher = Md4::new();
+
+    hasher.update(buf);
+
+    let hash: [u8; 16] = hasher.finalize().try_into().map_err(
+        |_| FsError::UnknownError
+    )?;
+
+    Ok(u64::from_le_bytes(hash[4..12].try_into().unwrap()))
+}
+
 mod tests {
     use sha3::{Digest, Sha3_256};
     #[test]
@@ -132,5 +145,15 @@ mod tests {
         let plain_out = aes_gcm_128_blk_dec(&mut buffer, &key, &mac, 123).unwrap();
 
         assert_eq!(plain, buffer);
+    }
+
+    use super::half_md4;
+    #[test]
+    fn test_half_md4() {
+        let buf = "hello!";
+
+        let rs = half_md4(buf.as_bytes()).unwrap();
+
+        println!("half md4 on {:?} results {:02X}.", buf, rs);
     }
 }

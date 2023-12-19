@@ -151,6 +151,17 @@ pub enum FileType {
     Lnk,
 }
 
+impl From<u8> for FileType {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => FileType::Reg,
+            1 => FileType::Dir,
+            2 => FileType::Lnk,
+            _ => panic!("Unexpected FileType in raw data!"),
+        }
+    }
+}
+
 impl Into<fuser::FileType> for FileType {
     fn into(self) -> fuser::FileType {
         match self {

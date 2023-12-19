@@ -5,6 +5,8 @@ use std::time::{SystemTime, Duration};
 use std::mem::size_of;
 use crate::htree::*;
 use crate::bcache::*;
+use std::ffi::OsStr;
+use crate::crypto::half_md4;
 
 #[derive(Clone)]
 pub enum LnkName {
@@ -87,16 +89,20 @@ impl Inode {
                 };
 
                 let dirent_num = dinode_base.base.size as usize;
-                let idx_start = size_of::<DInodeDirBase>();
-                let idx_end = idx_start + dirent_num * size_of::<EntryIndex>();
-                assert!(idx_end <= raw.len());
 
-                let idx_list = Vec::from(unsafe {
-                    std::slice::from_raw_parts(
-                        raw[idx_start..].as_ptr() as *const EntryIndex,
-                        dirent_num
-                    )
-                });
+                let idx_list = if dirent_num != 0 {
+                    let idx_start = size_of::<DInodeDirBase>();
+                    let idx_end = idx_start + dirent_num * size_of::<EntryIndex>();
+                    assert!(idx_end <= raw.len());
+                    Vec::from(unsafe {
+                        std::slice::from_raw_parts(
+                            raw[idx_start..].as_ptr() as *const EntryIndex,
+                            dirent_num
+                        )
+                    })
+                } else {
+                    vec![]
+                };
 
                 let ibase = &dinode_base.base;
                 Ok(Self {
@@ -191,6 +197,34 @@ impl Inode {
     pub fn get_link(&self) -> FsResult<LnkName> {
         if let InodeExt::Lnk(ref lnk) = self.ext {
             Ok(lnk.clone())
+        } else {
+            Err(FsError::PermissionDenied)
+        }
+    }
+
+    pub fn get_entry_list_info(&self) -> FsResult<(u32, usize)> {
+        if let InodeExt::Dir{data_start, ..} = self.ext {
+            Ok((data_start, self.size))
+        } else {
+            Err(FsError::PermissionDenied)
+        }
+    }
+
+    pub fn lookup_index(&self, name: &OsStr) -> FsResult<Option<(usize, usize)>> {
+        if let InodeExt::Dir{ref idx_list, ..} = self.ext {
+            if idx_list.len() == 0 {
+                // no idx, need to search from the first entry
+                return Ok(Some((0, self.size)))
+            }
+            let hash = half_md4(name.as_encoded_bytes())?;
+            if let Some(EntryIndex{position, group_len, ..}) = idx_list.iter().find(
+                |&ent| hash >= ent.hash
+            ) {
+                Ok(Some((*position as usize, *group_len as usize)))
+            } else {
+                // hash is smaller than any idx, so it doesn't exist
+                Ok(None)
+            }
         } else {
             Err(FsError::PermissionDenied)
         }
