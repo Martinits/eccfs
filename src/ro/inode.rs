@@ -214,7 +214,8 @@ impl Inode {
         if let InodeExt::Dir{ref idx_list, ..} = self.ext {
             if idx_list.len() == 0 {
                 // no idx, need to search from the first entry
-                return Ok(Some((0, self.size)))
+                // 2 because first two are . and ..
+                return Ok(Some((2, self.size)))
             }
             let hash = half_md4(name.as_encoded_bytes())?;
             if hash < idx_list[0].hash {
