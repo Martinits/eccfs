@@ -23,10 +23,27 @@ pub struct SuperBlock {
     pub dirent_tbl_len: u64,
     pub path_tbl_start: u64,
     pub path_tbl_len: u64,
-    pub blocks: u64,
     pub encrypted: bool,
     // runtime meta
     dirty: bool,
+    /// File system type
+    pub magic: usize,
+    /// File system block size
+    pub bsize: usize,
+    /// Total number of blocks on file system in units of `frsize`
+    pub blocks: usize,
+    /// Total number of free blocks
+    pub bfree: usize,
+    /// Number of free blocks available to non-privileged process
+    pub bavail: usize,
+    /// Total number of file serial numbers
+    pub files: usize,
+    /// Total number of free file serial numbers
+    pub ffree: usize,
+    /// Maximum filename length
+    pub namemax: usize,
+    /// Fundamental file system block size
+    pub frsize: usize,
 }
 
 #[repr(C)]
@@ -72,9 +89,10 @@ impl Into<SuperBlock> for DSuperBlock {
             dirent_tbl_len,
             path_tbl_start,
             path_tbl_len,
-            blocks,
+            blocks: blocks as usize,
             encrypted,
             dirty: false,
+            ..Default::default()
         }
     }
 }
@@ -95,5 +113,19 @@ impl SuperBlock {
         unsafe {
             Ok(dsb.as_ref().ok_or(FsError::UnknownError)?.clone().into())
         }
+    }
+
+    pub fn get_fsinfo(&self) -> FsResult<FsInfo> {
+        Ok(FsInfo {
+            magic: self.magic,
+            bsize: self.bsize,
+            blocks: self.blocks,
+            bfree: self.bfree,
+            bavail: self.bavail,
+            files: self.files,
+            ffree: self.ffree,
+            frsize: self.frsize,
+            namemax: self.namemax,
+        })
     }
 }

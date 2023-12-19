@@ -49,6 +49,7 @@ pub enum FsError {
     RwLockError,
     MutexError,
     CacheNeedHint,
+    IncompatibleMetadata,
 
     UnknownError,
 }
@@ -167,6 +168,7 @@ impl Into<c_int> for FsError {
             FsError::RwLockError => 265 as c_int,
             FsError::MutexError => 266 as c_int,
             FsError::CacheNeedHint => 267 as c_int,
+            FsError::IncompatibleMetadata => 268 as c_int,
 
             FsError::UnknownError => 511 as c_int,
         }

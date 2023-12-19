@@ -1,15 +1,15 @@
 use crate::*;
 use crate::vfs::*;
 use super::disk::*;
-use std::sync::Arc;
 use std::time::{SystemTime, Duration};
 use std::mem::size_of;
 use crate::htree::*;
 use crate::bcache::*;
 
-pub enum LnkNameType {
+#[derive(Clone)]
+pub enum LnkName {
     Short(String),
-    Long(u64),
+    Long(u64, usize), // (pos, length)
 }
 
 enum InodeExt {
@@ -22,10 +22,11 @@ enum InodeExt {
         data_start: u32,
         idx_list: Vec<EntryIndex>,
     },
-    Lnk(LnkNameType), // link name
+    Lnk(LnkName),
 }
 
 pub struct Inode {
+    iid: InodeID,
     tp: FileType,
     perm: FilePerm,
     nlinks: u16,
@@ -41,6 +42,7 @@ pub struct Inode {
 impl Inode {
     pub fn new_from_raw(
         raw: &[u8],
+        iid: InodeID,
         backend: ROCache,
         encrypted: bool,
         cache_data: bool,
@@ -58,6 +60,7 @@ impl Inode {
                 };
                 let ibase = &dinode.base;
                 Ok(Self {
+                    iid,
                     tp: FileType::Reg,
                     perm: get_perm_from_mode(ibase.mode),
                     nlinks: ibase.nlinks,
@@ -97,6 +100,7 @@ impl Inode {
 
                 let ibase = &dinode_base.base;
                 Ok(Self {
+                    iid,
                     tp: FileType::Dir,
                     perm: get_perm_from_mode(ibase.mode),
                     nlinks: ibase.nlinks,
@@ -119,6 +123,7 @@ impl Inode {
                 };
                 let ibase = &dinode.base;
                 Ok(Self {
+                    iid,
                     tp: FileType::Lnk,
                     perm: get_perm_from_mode(ibase.mode),
                     nlinks: ibase.nlinks,
@@ -130,15 +135,16 @@ impl Inode {
                     size: ibase.size as usize,
                     ext: InodeExt::Lnk(
                         if ibase.size > 32 {
-                            LnkNameType::Long(
-                                u64::from_le_bytes(dinode.name[..8].try_into().unwrap())
+                            LnkName::Long(
+                                u64::from_le_bytes(dinode.name[..8].try_into().unwrap()),
+                                ibase.size as usize,
                             )
                         } else {
-                            LnkNameType::Short(
+                            LnkName::Short(
                                 std::str::from_utf8(
                                     dinode.name.split_at(ibase.size as usize).0
                                 ).map_err(
-                                    |_| FsError::UnknownError
+                                    |_| FsError::InvalidData
                                 )?.into()
                             )
                         }
@@ -161,6 +167,30 @@ impl Inode {
                 offset += round;
             }
             Ok(done)
+        } else {
+            Err(FsError::PermissionDenied)
+        }
+    }
+
+    pub fn get_meta(&self) -> FsResult<Metadata> {
+        Ok(Metadata {
+            iid: self.iid,
+            size: self.size as u64,
+            blocks: self.size.div_ceil(BLK_SZ) as u64,
+            atime: self.atime,
+            ctime: self.ctime,
+            mtime: self.mtime,
+            ftype: self.tp,
+            perm: self.perm.bits(),
+            nlinks: self.nlinks,
+            uid: self.uid,
+            gid: self.gid,
+        })
+    }
+
+    pub fn get_link(&self) -> FsResult<LnkName> {
+        if let InodeExt::Lnk(ref lnk) = self.ext {
+            Ok(lnk.clone())
         } else {
             Err(FsError::PermissionDenied)
         }

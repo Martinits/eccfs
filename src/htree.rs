@@ -150,9 +150,23 @@ impl ROHashTree {
         Ok(data_ablk)
     }
 
+    pub fn read_exact(&mut self, mut offset: usize, to: &mut [u8]) -> FsResult<usize> {
+        let total = to.len();
+        let mut done = 0;
+        while done < total {
+            let ablk = self.get_blk(( offset / BLK_SZ ) as u64)?;
+            let round = (total - done).min(BLK_SZ - offset % BLK_SZ);
+            let start = offset % BLK_SZ;
+            to[offset..offset+round].copy_from_slice(&ablk[start..start+round]);
+            done += round;
+            offset += round;
+        }
+        Ok(done)
+    }
+
     // flush all blocks including root
     pub fn flush(&self) -> FsResult<()> {
-        self.backend.lock().map_err(|_| FsError::MutexError)?.flush()
+        mutex_lock!(self.backend).flush()
     }
 }
 

@@ -18,7 +18,8 @@ use crate::lru::Lru;
 pub struct ROFS {
     mode: FSMode,
     cache_data: bool,
-    backend: ROCache,
+    backend_template: ROCache,
+    backend: Mutex<ROCache>,
     sb: RwLock<SuperBlock>,
     inode_tbl: Mutex<ROHashTree>,
     dirent_tbl: Mutex<ROHashTree>,
@@ -73,7 +74,8 @@ impl ROFS {
         Ok(ROFS {
             mode,
             sb: RwLock::new(sb),
-            backend: cac,
+            backend: Mutex::new(cac.clone()),
+            backend_template: cac,
             cache_data: cache_data.is_some(),
             inode_tbl: Mutex::new(inode_tbl),
             dirent_tbl: Mutex::new(dirent_tbl),
@@ -91,20 +93,29 @@ impl ROFS {
         })
     }
 
-    fn fetch_inode(&mut self, iid: InodeID) -> FsResult<Inode> {
+    fn fetch_inode(&self, iid: InodeID) -> FsResult<Inode> {
         let (bpos, offset) = iid_split(iid);
         let ablk = mutex_lock!(self.inode_tbl).get_blk(bpos)?;
         Inode::new_from_raw(
             &ablk[offset as usize..],
-            self.backend.clone(),
+            iid,
+            self.backend_template.clone(),
             self.mode.is_encrypted(),
             self.cache_data,
         )
     }
 
-    fn get_inode(&mut self, iid: InodeID) -> FsResult<Arc<Inode>> {
+    fn get_inode(&self, iid: InodeID) -> FsResult<Arc<Inode>> {
         if let Some(mu_icac) = &self.icac {
-            unimplemented!();
+            let mut icac = mutex_lock!(mu_icac);
+            if let Some(ainode) = icac.get(&iid)? {
+                Ok(ainode)
+            } else {
+                // cache miss
+                let ainode = Arc::new(self.fetch_inode(iid)?);
+                icac.insert_and_get(iid, &ainode)?;
+                Ok(ainode)
+            }
         } else {
             // no icac
             let inode = self.fetch_inode(iid)?;
@@ -114,48 +125,65 @@ impl ROFS {
 }
 
 impl FileSystem for ROFS {
-    fn init(&self) ->FsResult<()> {
-        Ok(())
-    }
-
     fn destroy(&self) -> FsResult<()> {
         self.fsync()
     }
 
     fn finfo(&self) -> FsResult<FsInfo> {
-        unimplemented!();
+        rwlock_read!(self.sb).get_fsinfo()
     }
 
     fn fsync(&self) -> FsResult<()> {
+        if let Some(ref icac) = self.icac {
+            mutex_lock!(icac).flush_no_wb();
+        }
+
+        if let Some(ref de_cac) = self.de_cac {
+            mutex_lock!(de_cac).flush_no_wb();
+        }
+
+        mutex_lock!(self.backend).flush()?;
+
+        Ok(())
+    }
+
+    fn iread(&self, iid: InodeID, offset: usize, to: &mut [u8]) -> FsResult<usize> {
+        self.get_inode(iid)?.read_data(offset, to)
+    }
+
+    fn get_meta(&self, iid: InodeID) -> FsResult<Metadata> {
+        self.get_inode(iid)?.get_meta()
+    }
+
+    fn iread_link(&self, iid: InodeID) -> FsResult<String> {
+        match self.get_inode(iid)?.get_link()? {
+            LnkName::Short(s) => Ok(s),
+            LnkName::Long(pos, len) => {
+                let mut buf = vec![0u8; len];
+                let read = mutex_lock!(self.path_tbl)
+                            .read_exact(pos as usize, buf.as_mut_slice())?;
+                if read != len {
+                    Err(FsError::IncompatibleMetadata)
+                } else {
+                    Ok(String::from_utf8(buf).map_err(|_| FsError::InvalidData)?)
+                }
+            }
+        }
+    }
+
+    fn isync_meta(&self, iid: InodeID) -> FsResult<()> {
+        if let Some(ref icac) = self.icac {
+            mutex_lock!(icac).try_pop_key(&iid)?;
+        }
+
+        Ok(())
+    }
+
+    fn lookup(&self, iid: InodeID, name: &OsStr) -> FsResult<Option<InodeID>> {
         unimplemented!();
     }
 
-    fn iread(&mut self, inode: InodeID, offset: usize, to: &mut [u8]) -> FsResult<usize> {
-        let inode = self.get_inode(inode)?;
-        inode.read_data(offset, to)
-    }
-
-    fn get_meta(&self, inode: InodeID) -> FsResult<Metadata> {
-        unimplemented!();
-    }
-
-    fn iread_link(&self, inode: InodeID) -> FsResult<String> {
-        unimplemented!();
-    }
-
-    fn isync_data(&self, inode: InodeID) -> FsResult<()> {
-        unimplemented!();
-    }
-
-    fn isync_meta(&self, inode: InodeID) -> FsResult<()> {
-        unimplemented!();
-    }
-
-    fn lookup(&self, inode: InodeID, name: &OsStr) -> FsResult<Option<InodeID>> {
-        unimplemented!();
-    }
-
-    fn listdir(&self, inode: InodeID) -> FsResult<Vec<(InodeID, String, FileType)>> {
+    fn listdir(&self, iid: InodeID) -> FsResult<Vec<(InodeID, String, FileType)>> {
         unimplemented!();
     }
 }

@@ -13,8 +13,6 @@ pub struct FsInfo {
     pub magic: usize,
     /// File system block size
     pub bsize: usize,
-    /// Fundamental file system block size
-    pub frsize: usize,
     /// Total number of blocks on file system in units of `frsize`
     pub blocks: usize,
     /// Total number of free blocks
@@ -27,17 +25,19 @@ pub struct FsInfo {
     pub ffree: usize,
     /// Maximum filename length
     pub namemax: usize,
+    /// Fundamental file system block size
+    pub frsize: usize,
 }
 
 pub trait FileSystem: Sync + Send {
     /// init fs
     fn init(&self) -> FsResult<()> {
-        Err(FsError::Unsupported)
+        Ok(())
     }
 
     /// destroy this fs,  called before all worklaods are finished for this fs
     fn destroy(&self) -> FsResult<()> {
-        Err(FsError::Unsupported)
+        Ok(())
     }
 
     /// get fs stat info in superblock
@@ -51,7 +51,7 @@ pub trait FileSystem: Sync + Send {
     }
 
     /// read content of inode
-    fn iread(&mut self, _inode: InodeID, _offset: usize, _to: &mut [u8]) -> FsResult<usize> {
+    fn iread(&self, _inode: InodeID, _offset: usize, _to: &mut [u8]) -> FsResult<usize> {
         Err(FsError::Unsupported)
     }
 
@@ -192,7 +192,7 @@ pub struct Metadata {
     /// Type of file
     pub ftype: FileType,
     /// Permission
-    pub mode: u16,
+    pub perm: u16,
     /// Number of hard links
     pub nlinks: u16,
     /// User ID
@@ -213,7 +213,7 @@ impl Into<fuser::FileAttr> for Metadata {
             // BAD: mtime is the oldest time among the three, use it as crtime
             crtime: self.mtime,
             kind: self.ftype.into(),
-            perm: self.mode,
+            perm: self.perm,
             nlink: self.nlinks as u32,
             uid: self.uid,
             gid: self.gid,

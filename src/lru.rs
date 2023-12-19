@@ -67,6 +67,27 @@ impl<K: Hash + Eq + Clone, V> Lru<K, V> {
         }
     }
 
+    // try to pop the key, return payload only if key exists, no one is using and it's dirty
+    pub fn try_pop_key(&mut self, k: &K) -> FsResult<Option<V>> {
+        if let Some((_, (alock, _))) = self.0.get_key_value(&k) {
+            if Arc::<V>::strong_count(alock) == 1 {
+                let (_, (alock, dirty)) = self.0.pop_entry(&k).unwrap();
+                if dirty {
+                    // if dirty, return payload for write back
+                    Ok(Some(Arc::<V>::into_inner(alock).unwrap()))
+                } else {
+                    Ok(None)
+                }
+            } else {
+                // some one is using it
+                Ok(None)
+            }
+        } else {
+            // not found this key
+            Ok(None)
+        }
+    }
+
     // get a vector of keys of all entries that is not referenced
     fn get_all_unused(&self) -> Vec<K> {
         self.0.iter().filter_map(
