@@ -18,7 +18,7 @@ use std::mem::size_of;
 use crate::crypto::half_md4;
 
 
-pub const ROFS_MAGIC: u64 = 0x00454343524F4653;
+pub const ROFS_MAGIC: u64 = 0x00454343524F4653; // ECCROFS
 
 pub struct ROFS {
     mode: FSMode,
@@ -26,9 +26,9 @@ pub struct ROFS {
     backend_template: ROCache,
     backend: Mutex<ROCache>,
     sb: RwLock<SuperBlock>,
-    inode_tbl: Mutex<ROHashTree>,
-    dirent_tbl: Mutex<ROHashTree>,
-    path_tbl: Mutex<ROHashTree>,
+    inode_tbl: ROHashTree,
+    dirent_tbl: ROHashTree,
+    path_tbl: ROHashTree,
     icac: Option<Mutex<Lru<InodeID, Inode>>>,
     de_cac: Option<Mutex<Lru<String, InodeID>>>,
 }
@@ -82,9 +82,9 @@ impl ROFS {
             backend: Mutex::new(cac.clone()),
             backend_template: cac,
             cache_data: cache_data.is_some(),
-            inode_tbl: Mutex::new(inode_tbl),
-            dirent_tbl: Mutex::new(dirent_tbl),
-            path_tbl: Mutex::new(path_tbl),
+            inode_tbl,
+            dirent_tbl,
+            path_tbl,
             icac: if let Some(cap) = cache_inode {
                 Some(Mutex::new(Lru::new(cap)))
             } else {
@@ -100,7 +100,7 @@ impl ROFS {
 
     fn fetch_inode(&self, iid: InodeID) -> FsResult<Inode> {
         let (bpos, offset) = iid_split(iid);
-        let ablk = mutex_lock!(self.inode_tbl).get_blk(bpos)?;
+        let ablk = self.inode_tbl.get_blk(bpos)?;
         Inode::new_from_raw(
             &ablk[offset as usize..],
             iid,
@@ -134,8 +134,7 @@ impl ROFS {
             let pos = u64::from_le_bytes(name[..8].try_into().unwrap());
             let mut buf = vec![0u8; *len as usize];
 
-            let read = mutex_lock!(self.path_tbl)
-                        .read_exact(pos as usize, buf.as_mut_slice())?;
+            let read = self.path_tbl.read_exact(pos as usize, buf.as_mut_slice())?;
             if read != *len as usize {
                 return Err(FsError::InvalidData)
             }
@@ -183,8 +182,7 @@ impl FileSystem for ROFS {
             LnkName::Short(s) => Ok(s),
             LnkName::Long(pos, len) => {
                 let mut buf = vec![0u8; len];
-                let read = mutex_lock!(self.path_tbl)
-                            .read_exact(pos as usize, buf.as_mut_slice())?;
+                let read = self.path_tbl.read_exact(pos as usize, buf.as_mut_slice())?;
                 if read != len {
                     Err(FsError::IncompatibleMetadata)
                 } else {
@@ -207,7 +205,7 @@ impl FileSystem for ROFS {
             let step = size_of::<DirEntry>();
             let mut done = 0;
             while done < len {
-                let ablk = mutex_lock!(self.dirent_tbl).get_blk((pos / BLK_SZ) as u64)?;
+                let ablk = self.dirent_tbl.get_blk((pos / BLK_SZ) as u64)?;
                 let round = (len - done).min((BLK_SZ - pos % BLK_SZ) / step);
                 let ents = unsafe {
                     std::slice::from_raw_parts(
@@ -234,7 +232,7 @@ impl FileSystem for ROFS {
 
         let mut list = vec![DirEntry::default(); num];
         let to = unsafe { std::slice::from_raw_parts_mut(list.as_mut_ptr() as *mut u8, num) };
-        let read = mutex_lock!(self.dirent_tbl).read_exact(start as usize * BLK_SZ, to)?;
+        let read = self.dirent_tbl.read_exact(start as usize * BLK_SZ, to)?;
 
         if read != num {
             Err(FsError::InvalidData)

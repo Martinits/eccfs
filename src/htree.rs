@@ -150,7 +150,7 @@ impl ROHashTree {
         Ok(data_ablk)
     }
 
-    pub fn read_exact(&mut self, mut offset: usize, to: &mut [u8]) -> FsResult<usize> {
+    pub fn read_exact(&self, mut offset: usize, to: &mut [u8]) -> FsResult<usize> {
         let total = to.len();
         let mut done = 0;
         while done < total {
