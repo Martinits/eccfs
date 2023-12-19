@@ -5,13 +5,6 @@ use super::*;
 
 pub const SUPERBLOCK_POS: u64 = 0;
 
-#[repr(C)]
-struct DHashTreeMeta {
-    start: u64,
-    end: u64,
-    key: KeyEntry,
-}
-
 #[derive(Default)]
 pub struct SuperBlock {
     pub inode_tbl_key: KeyEntry,
@@ -24,31 +17,25 @@ pub struct SuperBlock {
     pub path_tbl_start: u64,
     pub path_tbl_len: u64,
     pub encrypted: bool,
-    // runtime meta
-    dirty: bool,
     /// File system type
-    pub magic: usize,
+    pub magic: u64,
     /// File system block size
     pub bsize: usize,
     /// Total number of blocks on file system in units of `frsize`
     pub blocks: usize,
-    /// Total number of free blocks
-    pub bfree: usize,
-    /// Number of free blocks available to non-privileged process
-    pub bavail: usize,
     /// Total number of file serial numbers
     pub files: usize,
-    /// Total number of free file serial numbers
-    pub ffree: usize,
     /// Maximum filename length, as for dirent structure, it's 65535 (max of u16)
     pub namemax: usize,
-    /// Fundamental file system block size
-    pub frsize: usize,
 }
 
 #[repr(C)]
 #[derive(Clone)]
 struct DSuperBlock {
+    magic: u64,
+    bsize: u64,
+    files: u64,
+    namemax: u64,
     inode_tbl_key: KeyEntry,
     dirent_tbl_key: KeyEntry,
     path_tbl_key: KeyEntry,
@@ -66,6 +53,10 @@ rw_as_blob!(DSuperBlock);
 impl Into<SuperBlock> for DSuperBlock {
     fn into(self) -> SuperBlock {
         let DSuperBlock {
+            magic,
+            bsize,
+            files,
+            namemax,
             inode_tbl_key,
             dirent_tbl_key,
             path_tbl_key,
@@ -80,6 +71,10 @@ impl Into<SuperBlock> for DSuperBlock {
         } = self;
 
         SuperBlock {
+            magic,
+            bsize: bsize as usize,
+            files: files as usize,
+            namemax: namemax as usize,
             inode_tbl_key,
             dirent_tbl_key,
             path_tbl_key,
@@ -91,8 +86,6 @@ impl Into<SuperBlock> for DSuperBlock {
             path_tbl_len,
             blocks: blocks as usize,
             encrypted,
-            dirty: false,
-            ..Default::default()
         }
     }
 }
@@ -109,9 +102,16 @@ impl SuperBlock {
             }
         }
 
-        let dsb = raw_blk.as_ptr() as *const DSuperBlock;
-        unsafe {
-            Ok(dsb.as_ref().ok_or(FsError::UnknownError)?.clone().into())
+        let dsb = unsafe {
+            (raw_blk.as_ptr() as *const DSuperBlock).as_ref().ok_or(FsError::UnknownError)?
+        };
+
+        // check constants
+        if dsb.magic != super::ROFS_MAGIC
+            || dsb.bsize != BLK_SZ as u64 || dsb.namemax != u16::MAX as u64 {
+            return Err(FsError::SuperBlockCheckFailed)
+        } else {
+            Ok(dsb.clone().into())
         }
     }
 
@@ -120,11 +120,11 @@ impl SuperBlock {
             magic: self.magic,
             bsize: self.bsize,
             blocks: self.blocks,
-            bfree: self.bfree,
-            bavail: self.bavail,
+            bfree: 0,
+            bavail: 0,
             files: self.files,
-            ffree: self.ffree,
-            frsize: self.frsize,
+            ffree: 0,
+            frsize: self.bsize,
             namemax: self.namemax,
         })
     }

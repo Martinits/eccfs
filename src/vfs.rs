@@ -10,7 +10,7 @@ pub type InodeID = u64;
 #[derive(Debug, Default)]
 pub struct FsInfo {
     /// File system type
-    pub magic: usize,
+    pub magic: u64,
     /// File system block size
     pub bsize: usize,
     /// Total number of blocks on file system in units of `frsize`

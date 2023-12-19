@@ -217,13 +217,15 @@ impl Inode {
                 return Ok(Some((0, self.size)))
             }
             let hash = half_md4(name.as_encoded_bytes())?;
-            if let Some(EntryIndex{position, group_len, ..}) = idx_list.iter().find(
+            if hash < idx_list[0].hash {
+                // hash is smaller than smallest(first) idx, so it doesn't exist
+                Ok(None)
+            } else if let Some(EntryIndex{position, group_len, ..}) = idx_list.iter().find(
                 |&ent| hash >= ent.hash
             ) {
                 Ok(Some((*position as usize, *group_len as usize)))
             } else {
-                // hash is smaller than any idx, so it doesn't exist
-                Ok(None)
+                Err(FsError::IncompatibleMetadata)
             }
         } else {
             Err(FsError::PermissionDenied)

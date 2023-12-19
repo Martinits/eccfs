@@ -18,6 +18,8 @@ use std::mem::size_of;
 use crate::crypto::half_md4;
 
 
+pub const ROFS_MAGIC: u64 = 0x00454343524F4653;
+
 pub struct ROFS {
     mode: FSMode,
     cache_data: bool,
