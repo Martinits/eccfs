@@ -85,6 +85,41 @@ pub fn aes_gcm_128_blk_dec(
     Ok(())
 }
 
+mod key_gen {
+    use aes::Aes128;
+    use cmac::{Cmac, Mac};
+    use super::Key128;
+    use crate::*;
+    use rand_core::RngCore;
+
+    #[repr(C)]
+    struct KdfInput {
+        idx: u32,
+        label: [u8; 64],
+        context: u64,
+        nonce: [u8; 16],
+        out_len: u32, //in bits
+    }
+    rw_as_blob!(KdfInput);
+
+    pub fn generate_random_key(kdk: &Key128, counter: u32, pos: u64) -> FsResult<Key128> {
+        let mut nonce = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut nonce);
+
+        let mut mac = Cmac::<Aes128>::new_from_slice(kdk).unwrap();
+        let input = KdfInput {
+            idx: counter,
+            label: b"#ENCLAVE-CC-TEE-FS-SECURE-RANDOM-KEY-AES-128-CMAC-NIST-SP800-108".to_owned(),
+            context: pos,
+            nonce,
+            out_len: 128,
+        };
+        mac.update(input.as_ref());
+        Ok(mac.finalize().into_bytes().try_into().unwrap())
+    }
+}
+pub use key_gen::*;
+
 pub fn half_md4(buf: &[u8]) -> FsResult<u64> {
     let mut hasher = Md4::new();
 

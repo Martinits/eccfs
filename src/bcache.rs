@@ -143,13 +143,9 @@ impl ROCacheServer {
                 reply.send(send).unwrap();
             }
             ROCacheReq::Flush => {
-                self.flush();
+                self.lru.flush_no_wb().unwrap();
             }
         }
-    }
-
-    fn flush(&mut self) {
-        self.lru.flush_no_wb();
     }
 
     fn fetch_from_backend(&mut self, pos: u64, hint: CacheMissHint) -> FsResult<Block> {
