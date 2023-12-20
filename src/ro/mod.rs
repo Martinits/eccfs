@@ -201,6 +201,14 @@ impl FileSystem for ROFS {
     }
 
     fn lookup(&self, iid: InodeID, name: &OsStr) -> FsResult<Option<InodeID>> {
+        // Currently we don't use de_cac
+        // because in order to maintain a map from inode full_path to inodeid,
+        // we need to store full path in struct Inode.
+        // But we cannot know an inode's full path when get_inode,
+        // unless a complete map from inodeid to name is maintained in memory,
+        // which is too large to stick to memory.
+        // This only influences SGX deployments, not FUSE,
+        // because FUSE leverages kernel's dir entry cache.
         if let Some((mut pos, len)) = self.get_inode(iid)?.lookup_index(name)? {
             let step = size_of::<DirEntry>();
             let mut done = 0;
