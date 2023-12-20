@@ -12,7 +12,7 @@ use crate::htree::*;
 use inode::*;
 use crate::bcache::*;
 use crate::storage::*;
-use crate::lru::Lru;
+use crate::lru::*;
 use disk::*;
 use std::mem::size_of;
 use crate::crypto::half_md4;
@@ -29,8 +29,8 @@ pub struct ROFS {
     inode_tbl: ROHashTree,
     dirent_tbl: ROHashTree,
     path_tbl: ROHashTree,
-    icac: Option<Mutex<Lru<InodeID, Inode>>>,
-    de_cac: Option<Mutex<Lru<String, InodeID>>>,
+    icac: Option<Mutex<ChannelLru<InodeID, Inode>>>,
+    de_cac: Option<Mutex<ChannelLru<String, InodeID>>>,
 }
 
 impl ROFS {
@@ -86,12 +86,12 @@ impl ROFS {
             dirent_tbl,
             path_tbl,
             icac: if let Some(cap) = cache_inode {
-                Some(Mutex::new(Lru::new(cap)))
+                Some(Mutex::new(ChannelLru::new(cap)))
             } else {
                 None
             },
             de_cac: if let Some(cap) = cache_de {
-                Some(Mutex::new(Lru::new(cap)))
+                Some(Mutex::new(ChannelLru::new(cap)))
             } else {
                 None
             },
@@ -113,7 +113,7 @@ impl ROFS {
     fn get_inode(&self, iid: InodeID) -> FsResult<Arc<Inode>> {
         if let Some(mu_icac) = &self.icac {
             let mut icac = mutex_lock!(mu_icac);
-            if let Some(ainode) = icac.get(&iid)? {
+            if let Some(ainode) = icac.get(iid)? {
                 Ok(ainode)
             } else {
                 // cache miss
@@ -157,11 +157,11 @@ impl FileSystem for ROFS {
 
     fn fsync(&self) -> FsResult<()> {
         if let Some(ref icac) = self.icac {
-            mutex_lock!(icac).flush_no_wb();
+            mutex_lock!(icac).flush_all(false)?;
         }
 
         if let Some(ref de_cac) = self.de_cac {
-            mutex_lock!(de_cac).flush_no_wb();
+            mutex_lock!(de_cac).flush_all(false)?;
         }
 
         mutex_lock!(self.backend).flush()?;
@@ -194,7 +194,7 @@ impl FileSystem for ROFS {
 
     fn isync_meta(&self, iid: InodeID) -> FsResult<()> {
         if let Some(ref icac) = self.icac {
-            mutex_lock!(icac).try_pop_key(&iid)?;
+            mutex_lock!(icac).flush_key(iid)?;
         }
 
         Ok(())
