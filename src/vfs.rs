@@ -151,8 +151,8 @@ pub enum FileType {
     Lnk,
 }
 
-impl From<u8> for FileType {
-    fn from(value: u8) -> Self {
+impl From<u16> for FileType {
+    fn from(value: u16) -> Self {
         match value {
             0 => FileType::Reg,
             1 => FileType::Dir,
@@ -199,7 +199,7 @@ bitflags! {
 const PERM_MASK: u16 = 0o0777;
 
 pub fn get_ftype_from_mode(mode: u16) -> FileType {
-    FileType::from((mode >> 12) as u8)
+    FileType::from(mode >> 12)
 }
 
 pub fn get_perm_from_mode(mode: u16) -> FilePerm {

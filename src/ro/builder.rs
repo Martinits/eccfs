@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::cmp::Ordering;
 use std::os::unix::fs::MetadataExt;
+use std::io::Write;
 
 
 const MAX_ENTRY_GROUP_LEN: usize = 16;
@@ -132,6 +133,27 @@ fn push_child_info(
     }
 }
 
+fn write_vec_as_bytes<T>(f: &mut File, v: &Vec<T>) -> FsResult<()> {
+    io_try!(f.write_all(
+        unsafe {
+            std::slice::from_raw_parts(
+                v.as_ptr() as *const u8,
+                v.len() * size_of::<T>()
+            )
+        }
+    ));
+    Ok(())
+}
+
+fn seek_and_write(f: &mut File, seek: u64, b: &[u8]) -> FsResult<()> {
+    if io_try!(f.seek(SeekFrom::Start(seek))) != seek {
+        return Err(FsError::NotSeekable);
+    }
+
+    io_try!(f.write_all(b));
+    Ok(())
+}
+
 #[derive(Default, Clone)]
 struct DirEntryRaw {
     hash: u64,
@@ -146,6 +168,7 @@ struct ROBuilder {
     itbl: File,
     ptbl: File,
     dtbl: File,
+    dtbl_next_blk: usize,
     data: File,
     kdk: (Key128, u64),
     key_gen_counter: u64,
@@ -185,6 +208,7 @@ impl ROBuilder {
             image: to,
             itbl,
             dtbl,
+            dtbl_next_blk: 0,
             ptbl,
             data,
             kdk: (kdk, 0),
@@ -221,12 +245,11 @@ impl ROBuilder {
             (pos, off) = self.jump_over_root_inode(pos + 1, 0);
         }
 
-        let fpos = pos * BLK_SZ as u64 + off as u64;
-        if io_try!(self.itbl.seek(SeekFrom::Start(fpos))) != fpos {
-            return Err(FsError::NotSeekable);
-        }
-
-        io_try!(self.itbl.write_all(inode));
+        seek_and_write(
+            &mut self.itbl,
+            pos * BLK_SZ as u64 + off as u64,
+            inode,
+        )?;
 
         let ret = iid_join(pos, off);
 
@@ -241,19 +264,16 @@ impl ROBuilder {
     }
 
     fn write_root_inode(&mut self, rinode: &[u8]) -> FsResult<()> {
-        let fpos = 1 * BLK_SZ as u64 + self.root_inode_max_sz as u64;
-        if io_try!(self.itbl.seek(SeekFrom::Start(fpos))) != fpos {
-            return Err(FsError::NotSeekable);
-        }
-
-        io_try!(self.itbl.write_all(rinode));
-
-        Ok(())
+        seek_and_write(
+            &mut self.itbl,
+            1 * BLK_SZ as u64 + self.root_inode_max_sz as u64,
+            rinode,
+        )
     }
 
-    fn gen_inode_base(&mut self, pb: &PathBuf) -> FsResult<DInodeBase> {
-        let m = io_try!(fs::symlink_metadata(&pb));
-        let tp = if m.is_file() {
+    fn gen_inode_tp(pb: &PathBuf) -> FsResult<FileType> {
+        let m = io_try!(fs::symlink_metadata(pb));
+        Ok(if m.is_file() {
             FileType::Reg
         } else if m.is_dir() {
             FileType::Dir
@@ -261,7 +281,11 @@ impl ROBuilder {
             FileType::Lnk
         } else {
             panic!("Unsupported file type!");
-        };
+        })
+    }
+
+    fn gen_inode_base(pb: &PathBuf) -> FsResult<DInodeBase> {
+        let m = io_try!(fs::symlink_metadata(&pb));
 
         Ok(DInodeBase {
             mode: get_mode_from_libc_mode(m.mode()),
@@ -276,13 +300,81 @@ impl ROBuilder {
 
     }
 
+    fn gen_name_slot(v: &[u8]) -> FsResult<[u8; 12]> {
+        assert!(v.len() <= 12);
+        let mut ret = [0u8; 12];
+        let mut writer: &mut [u8] = &mut ret;
+        let written = io_try!(writer.write(v));
+        assert_eq!(written, v.len());
+        Ok(ret)
+    }
+
     fn write_dir_entries(
         &mut self,
-        de_list_raw: &Vec<DirEntryRaw>
-    ) -> FsResult<(u32, u64)> {
+        mytp: FileType,
+        de_list_raw: Vec<DirEntryRaw>
+    ) -> FsResult<(u32, u64, u64)> {
+        // seek to next block
+        let next = (self.dtbl_next_blk * BLK_SZ) as u64;
+        if io_try!(self.dtbl.seek(SeekFrom::Start(next))) != next {
+            return Err(FsError::NotSeekable);
+        }
+        let data_start = self.dtbl_next_blk;
+        let nr_de = de_list_raw.len() + 2;
+
         // write dot and dotdot first
+        let dots = vec![
+            DirEntry {
+                hash: 0,
+                ipos: 0, // pending
+                len: 1,
+                tp: mytp.into(),
+                name: Self::gen_name_slot(".".as_bytes())?,
+            },
+            DirEntry {
+                hash: 0,
+                ipos: 0, // pending
+                len: 2,
+                tp: FileType::Dir.into(),
+                name: Self::gen_name_slot("..".as_bytes())?,
+            },
+        ];
+        write_vec_as_bytes(&mut self.dtbl, &dots)?;
+
+        // write all dir entries
+        let mut de_list = Vec::with_capacity(de_list_raw.len());
+        for de_raw in de_list_raw {
+            assert!(de_raw.name.len() <= u16::MAX as usize);
+            let name = if de_raw.name.len() > 12 {
+                // write to ptbl
+                let cur_pos = io_try!(self.ptbl.seek(SeekFrom::Current(0)));
+                io_try!(self.ptbl.write_all(de_raw.name.as_encoded_bytes()));
+                Self::gen_name_slot(&cur_pos.to_le_bytes())?
+            } else {
+                Self::gen_name_slot(de_raw.name.as_encoded_bytes())?
+            };
+            de_list.push(DirEntry {
+                hash: de_raw.hash,
+                ipos: de_raw.ipos,
+                len: de_raw.name.len() as u16,
+                tp: de_raw.tp,
+                name,
+            });
+        }
+        write_vec_as_bytes(&mut self.dtbl, &de_list)?;
+
+        // move to next block
+        self.dtbl_next_blk += (
+            size_of::<DirEntry>() * nr_de
+        ).div_ceil(BLK_SZ);
 
         // return data_start and dotdot position(in bytes of the whole de_tbl)
+        // and dot position(in bytes of the whole de_tbl) of its own dir entries
+        Ok((
+            data_start as u32,
+            (data_start * BLK_SZ + size_of::<DirEntry>() + 8) as u64,
+            (data_start * BLK_SZ + 8) as u64
+        ))
     }
 
     fn handle_dir(
@@ -359,12 +451,14 @@ impl ROBuilder {
         }
 
         // write dir entries
-        let (data_start, dotdot) = self.write_dir_entries(&de_raw_list)?;
+        let inode_base_size = de_raw_list.len() as u64;
+        let (data_start, dotdot, self_dot)
+            = self.write_dir_entries(Self::gen_inode_tp(path)?, de_raw_list)?;
 
         // dinode dir base
-        let mut dinode_base = self.gen_inode_base(path)?;
+        let mut dinode_base = Self::gen_inode_base(path)?;
         // for dir inodes, size represents entry num
-        dinode_base.size = de_raw_list.len() as u64;
+        dinode_base.size = inode_base_size;
         let dir_base = DInodeDirBase {
             base: dinode_base,
             data_start,
@@ -387,17 +481,16 @@ impl ROBuilder {
         );
         let iid = self.write_inode(dinode_bytes.as_slice())?;
 
-        // write this INodeID as all dir children's '..'
+        // write this INodeID as all dir children's '..' and its own '.'
+        dotdot_list.push(self_dot);
         for dd in dotdot_list {
-            if io_try!(self.dtbl.seek(SeekFrom::Start(dd))) != dd {
-                return Err(FsError::NotSeekable);
-            }
-
-            io_try!(self.dtbl.write_all(
+            seek_and_write(
+                &mut self.dtbl,
+                dd,
                 unsafe {
                     std::slice::from_raw_parts(&iid as *const u64 as *const u8, 8)
-                }
-            ));
+                },
+            )?;
         }
 
         // return this inode's iid and it's byte position of dotdot InodeID
@@ -409,13 +502,16 @@ impl ROBuilder {
     }
 
     fn handle_sym(&mut self, path: &PathBuf) -> FsResult<InodeID> {
-        let mut dinode_base = self.gen_inode_base(path)?;
+        let mut dinode_base = Self::gen_inode_base(path)?;
         // for symlnk inodes, size represents sym name length
-        dinode_base.size = ;
         Ok(0)
     }
 
     fn finalize(&mut self) -> FsResult<()> {
+        // round all file sizes up to multiple of BLK_SZ
+        // write superblock to image file
+        // filter all meta files through hash tree, append to image file
+        // filter all reg files through hash tree, append to image file
         Ok(())
     }
 }

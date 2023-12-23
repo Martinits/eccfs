@@ -250,7 +250,7 @@ impl FileSystem for ROFS {
             for ent in list.into_iter() {
                 let name = self.get_dir_ent_name(&ent)?;
 
-                ret.push((ent.ipos, name, FileType::from(ent.tp as u8)));
+                ret.push((ent.ipos, name, FileType::from(ent.tp)));
             }
             Ok(ret)
         }
