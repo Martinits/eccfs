@@ -10,6 +10,10 @@ pub fn get_perm_from_mode(mode: u16) -> FilePerm {
     FilePerm::from_bits(mode & 0x0fff).unwrap()
 }
 
+pub fn get_mode(tp: FileType, perm: FilePerm) -> u16 {
+    (Into::<u16>::into(tp) << 12) | (perm.bits() & 0x0fff)
+}
+
 #[repr(C)]
 #[derive(Default)]
 pub struct DInodeBase {
@@ -93,8 +97,9 @@ pub struct DInodeDirBase {
     pub nr_idx: u32,
 
     /// padding
-    _padding: u64,
+    pub _padding: u64,
 }
+rw_as_blob!(DInodeDirBase);
 
 #[repr(C)]
 pub struct DInodeDir {

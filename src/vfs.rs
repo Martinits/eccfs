@@ -162,6 +162,16 @@ impl From<u8> for FileType {
     }
 }
 
+impl Into<u16> for FileType {
+    fn into(self) -> u16 {
+        match self {
+            FileType::Reg => 0,
+            FileType::Dir => 1,
+            FileType::Lnk => 2,
+        }
+    }
+}
+
 impl Into<fuser::FileType> for FileType {
     fn into(self) -> fuser::FileType {
         match self {

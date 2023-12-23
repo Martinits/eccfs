@@ -1,6 +1,6 @@
 use std::fs::{File, OpenOptions};
 use std::io::prelude::*;
-use std::io::{ErrorKind, SeekFrom};
+use std::io::SeekFrom;
 use crate::*;
 use std::path::Path;
 
@@ -20,10 +20,7 @@ pub struct FileStorage {
 
 impl FileStorage {
     pub fn new(path: &Path, writable: bool) -> FsResult<Self> {
-        let handle = OpenOptions::new().read(true).write(writable)
-            .open(path).map_err( |e| {
-                Into::<FsError>::into(e.kind() as u64)
-            })?;
+        let handle = io_try!(OpenOptions::new().read(true).write(writable).open(path));
 
         Ok(Self {
             handle,
@@ -35,15 +32,12 @@ impl FileStorage {
 
 impl ROStorage for FileStorage {
     fn read_blk(&mut self, pos: u64) -> FsResult<Block> {
-        let position = self.handle.seek(SeekFrom::Start(pos * BLK_SZ as u64))
-            .map_err( |e| Into::<FsError>::into(e) )?;
+        let position = io_try!(self.handle.seek(SeekFrom::Start(pos * BLK_SZ as u64)));
         if position != pos * BLK_SZ as u64 {
             Err(FsError::NotSeekable)
         } else {
             let mut blk = [0u8; BLK_SZ] as Block;
-            self.handle.read_exact(&mut blk).map_err(
-                |e| Into::<FsError>::into(e)
-            )?;
+            io_try!(self.handle.read_exact(&mut blk));
             Ok(blk)
         }
     }
@@ -51,14 +45,11 @@ impl ROStorage for FileStorage {
 
 impl RWStorage for FileStorage {
     fn write_blk(&mut self, pos: u64, from: &Block) -> FsResult<()> {
-        let position = self.handle.seek(SeekFrom::Start(pos * BLK_SZ as u64))
-            .map_err( |e| Into::<FsError>::into(e) )?;
+        let position = io_try!(self.handle.seek(SeekFrom::Start(pos * BLK_SZ as u64)));
         if position != pos * BLK_SZ as u64 {
             Err(FsError::NotSeekable)
         } else {
-            Ok(self.handle.write_all(from).map_err(
-                |e| Into::<FsError>::into(e)
-            )?)
+            Ok(io_try!(self.handle.write_all(from)))
         }
     }
 }

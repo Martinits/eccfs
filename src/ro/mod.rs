@@ -1,6 +1,7 @@
 pub mod superblock;
 pub mod inode;
 pub mod disk;
+pub mod builder;
 
 use crate::vfs::*;
 use std::sync::{Arc, RwLock, Mutex};
@@ -256,6 +257,10 @@ impl FileSystem for ROFS {
     }
 }
 
-fn iid_split(iid: InodeID) -> (u64, u16) {
+pub fn iid_split(iid: InodeID) -> (u64, u16) {
     (iid & 0x0ffffffffffff, (iid >> 48) as u16)
+}
+
+pub fn iid_join(pos: u64, off: u16) -> InodeID {
+    pos | ((off as u64) << 48)
 }

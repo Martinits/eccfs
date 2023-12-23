@@ -102,3 +102,10 @@ macro_rules! rwlock_write {
         $mu.write().map_err(|_| FsError::RwLockError)?
     };
 }
+
+#[macro_export]
+macro_rules! io_try {
+    ($e: expr) => {
+        $e.map_err(|e| Into::<FsError>::into(e))?
+    };
+}
