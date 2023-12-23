@@ -8,7 +8,7 @@ use crate::crypto::*;
 use rand_core::RngCore;
 use crate::vfs::*;
 use super::*;
-use std::mem::size_of;
+use std::mem::{size_of_val, size_of};
 use super::disk::*;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -21,8 +21,14 @@ const MAX_ENTRY_GROUP_LEN: usize = 16;
 
 type ChildInfo = (PathBuf, FileType, InodeID, Option<u64>);
 
+const ROOT_PATHBUF: &str = "/";
+
 /// build a rofs image named [`to`] from all files under [`from`]
-pub fn build_from_dir(from: &Path, to: &Path) -> FsResult<()> {
+pub fn build_from_dir(
+    from: &Path,
+    to: &Path,
+    mode: FSMode,
+) -> FsResult<()> {
     // check to
     if fs::metadata(to).is_ok() {
         return Err(FsError::AlreadyExists);
@@ -42,10 +48,11 @@ pub fn build_from_dir(from: &Path, to: &Path) -> FsResult<()> {
         image,
         to_dir,
         io_try!(fs::read_dir(from)).count(),
+        mode,
     )?;
 
     // stack holds full paths
-    let mut stack = vec![Some(("/".into(), 0usize))];
+    let mut stack = vec![Some((ROOT_PATHBUF.into(), 0usize))];
     push_all_children(&mut stack, from, 0)?;
     // de_info maps full path to children, holding child names, not full paths
     let mut de_info = HashMap::new();
@@ -101,9 +108,8 @@ pub fn build_from_dir(from: &Path, to: &Path) -> FsResult<()> {
     }
     assert_eq!(stack.len(), 1);
 
-    // write root inode
-
-    builder.finalize()?;
+    let root_pb: PathBuf = ROOT_PATHBUF.into();
+    builder.finalize(de_info.remove(&root_pb).unwrap())?;
 
     Ok(())
 }
@@ -154,6 +160,10 @@ fn seek_and_write(f: &mut File, seek: u64, b: &[u8]) -> FsResult<()> {
     Ok(())
 }
 
+fn get_file_sz(f: &mut File) -> FsResult<u64> {
+    Ok(io_try!(f.seek(SeekFrom::Current(0))))
+}
+
 #[derive(Default, Clone)]
 struct DirEntryRaw {
     hash: u64,
@@ -164,6 +174,7 @@ struct DirEntryRaw {
 }
 
 struct ROBuilder {
+    mode: FSMode,
     image: File,
     itbl: File,
     ptbl: File,
@@ -181,6 +192,7 @@ impl ROBuilder {
         to: File,
         mut to_dir: PathBuf,
         root_dir_nr_entry: usize,
+        mode: FSMode,
     ) -> FsResult<Self> {
         // open meta temp file and data temp file
         to_dir.push(".inode.eccfs");
@@ -205,6 +217,7 @@ impl ROBuilder {
                             + size_of::<EntryIndex>() * nr_idx) as u16;
 
         Ok(Self {
+            mode,
             image: to,
             itbl,
             dtbl,
@@ -239,6 +252,8 @@ impl ROBuilder {
         }
     }
     fn write_inode(&mut self, inode: &[u8]) -> FsResult<InodeID> {
+        assert_eq!(inode.len() % INODE_ALIGN, 0);
+
         let (mut pos, mut off) = iid_split(self.next_inode);
         if BLK_SZ - off as usize % BLK_SZ > inode.len() {
             // not enough space in current block, move to next
@@ -300,13 +315,24 @@ impl ROBuilder {
 
     }
 
-    fn gen_name_slot(v: &[u8]) -> FsResult<[u8; 12]> {
-        assert!(v.len() <= 12);
-        let mut ret = [0u8; 12];
-        let mut writer: &mut [u8] = &mut ret;
+    fn gen_short_name(v: &[u8], threshold: usize) -> FsResult<Vec<u8>> {
+        assert!(v.len() <= threshold);
+        let mut ret = vec![0u8; threshold];
+        let mut writer: &mut [u8] = ret.as_mut_slice();
         let written = io_try!(writer.write(v));
         assert_eq!(written, v.len());
         Ok(ret)
+    }
+
+    fn handle_long_path(&mut self, path: &[u8], threshold: usize) -> FsResult<Vec<u8>> {
+        if path.len() > threshold {
+            // write to ptbl
+            let pos = io_try!(self.ptbl.seek(SeekFrom::Current(0)));
+            io_try!(self.ptbl.write_all(path));
+            Self::gen_short_name(&pos.to_le_bytes(), threshold)
+        } else {
+            Self::gen_short_name(path, threshold)
+        }
     }
 
     fn write_dir_entries(
@@ -329,14 +355,20 @@ impl ROBuilder {
                 ipos: 0, // pending
                 len: 1,
                 tp: mytp.into(),
-                name: Self::gen_name_slot(".".as_bytes())?,
+                name: Self::gen_short_name(
+                        ".".as_bytes(),
+                        DE_MAX_INLINE_NAME,
+                    )?.try_into().unwrap(),
             },
             DirEntry {
                 hash: 0,
                 ipos: 0, // pending
                 len: 2,
                 tp: FileType::Dir.into(),
-                name: Self::gen_name_slot("..".as_bytes())?,
+                name: Self::gen_short_name(
+                        "..".as_bytes(),
+                        DE_MAX_INLINE_NAME,
+                    )?.try_into().unwrap(),
             },
         ];
         write_vec_as_bytes(&mut self.dtbl, &dots)?;
@@ -345,20 +377,15 @@ impl ROBuilder {
         let mut de_list = Vec::with_capacity(de_list_raw.len());
         for de_raw in de_list_raw {
             assert!(de_raw.name.len() <= u16::MAX as usize);
-            let name = if de_raw.name.len() > 12 {
-                // write to ptbl
-                let cur_pos = io_try!(self.ptbl.seek(SeekFrom::Current(0)));
-                io_try!(self.ptbl.write_all(de_raw.name.as_encoded_bytes()));
-                Self::gen_name_slot(&cur_pos.to_le_bytes())?
-            } else {
-                Self::gen_name_slot(de_raw.name.as_encoded_bytes())?
-            };
             de_list.push(DirEntry {
                 hash: de_raw.hash,
                 ipos: de_raw.ipos,
                 len: de_raw.name.len() as u16,
                 tp: de_raw.tp,
-                name,
+                name: self.handle_long_path(
+                        de_raw.name.as_encoded_bytes(),
+                        DE_MAX_INLINE_NAME,
+                    )?.try_into().unwrap(),
             });
         }
         write_vec_as_bytes(&mut self.dtbl, &de_list)?;
@@ -488,7 +515,10 @@ impl ROBuilder {
                 &mut self.dtbl,
                 dd,
                 unsafe {
-                    std::slice::from_raw_parts(&iid as *const u64 as *const u8, 8)
+                    std::slice::from_raw_parts(
+                        &iid as *const u64 as *const u8,
+                        size_of_val(&iid),
+                    )
                 },
             )?;
         }
@@ -498,16 +528,46 @@ impl ROBuilder {
     }
 
     fn handle_reg(&mut self, path: &PathBuf) -> FsResult<InodeID> {
-        Ok(0)
+        let dinode_base = Self::gen_inode_base(path)?;
+
+        let data_start = get_file_sz(&mut self.data)?;
+
+        // generate hash tree
+        let mut f = io_try!(OpenOptions::new().read(true).open(path));
+
+        let (nr_blk, keys) = build_htree(&mut self.data, &mut f, self.mode.is_encrypted())?;
+
+        let dinode_reg = DInodeReg {
+            base: dinode_base,
+            crypto_blob: keys,
+            data_start,
+            data_len: nr_blk as u64,
+        };
+        let iid = self.write_inode(dinode_reg.as_ref())?;
+        Ok(iid)
     }
 
     fn handle_sym(&mut self, path: &PathBuf) -> FsResult<InodeID> {
         let mut dinode_base = Self::gen_inode_base(path)?;
+
         // for symlnk inodes, size represents sym name length
-        Ok(0)
+        let target = io_try!(fs::read_link(path));
+        dinode_base.size = target.as_os_str().as_encoded_bytes().len() as u64;
+
+        let dinode_sym = DInodeLnk {
+            base: dinode_base,
+            name: self.handle_long_path(
+                target.as_os_str().as_encoded_bytes(),
+                DI_LNK_MAX_INLINE_NAME,
+            )?.try_into().unwrap(),
+        };
+
+        let iid = self.write_inode(dinode_sym.as_ref())?;
+        Ok(iid)
     }
 
-    fn finalize(&mut self) -> FsResult<()> {
+    fn finalize(&mut self, root_child_info: Vec<ChildInfo>) -> FsResult<()> {
+        // create and write root inode
         // round all file sizes up to multiple of BLK_SZ
         // write superblock to image file
         // filter all meta files through hash tree, append to image file
@@ -516,15 +576,11 @@ impl ROBuilder {
     }
 }
 
-struct HTreeBuilder {
-    nr_blk: usize,
-
-}
-
-impl HTreeBuilder {
-    fn new(nr_blk: usize) -> FsResult<Self> {
-        Ok(Self {
-            nr_blk,
-        })
-    }
+fn build_htree(
+    to: &mut File,
+    from: &mut File,
+    encrypted: bool,
+) -> FsResult<(usize, KeyEntry)> {
+    // return size of htree in block, root block keys
+    Ok((0, [0u8; 32]))
 }

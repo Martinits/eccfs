@@ -1,6 +1,7 @@
 use crate::rw_as_blob;
 use std::mem::size_of;
-use crate::vfs::*;
+
+pub const INODE_ALIGN: usize = 16;
 
 #[repr(C)]
 #[derive(Default)]
@@ -42,6 +43,7 @@ pub struct DInodeReg {
     pub crypto_blob: [u8; 32],
 
     /// first block of file data, i.e. the Hash Tree
+    /// starting from File Section (recorded in superblock)
     pub data_start: u64,
 
     /// total blocks of data section, i.e. the Hash Tree
@@ -73,6 +75,8 @@ pub struct DirEntry {
     pub name: [u8; 12],
 }
 rw_as_blob!(DirEntry);
+
+pub const DE_MAX_INLINE_NAME: usize = 12;
 
 #[repr(C)]
 pub struct DInodeDirBase {
@@ -131,6 +135,7 @@ pub struct DInodeLnk {
 }
 rw_as_blob!(DInodeLnk);
 
+pub const DI_LNK_MAX_INLINE_NAME: usize = 32;
 
 mod test {
     use crate::ro::disk::*;
