@@ -1,5 +1,5 @@
 use crate::*;
-use crate::vfs::*;
+use crate::vfs::{*, self};
 use super::disk::*;
 use std::time::{SystemTime, Duration};
 use std::mem::size_of;
@@ -54,7 +54,7 @@ impl Inode {
         let mode: u16 = unsafe {
             *(raw.as_ptr() as *const u16)
         };
-        match super::disk::get_ftype_from_mode(mode) {
+        match get_ftype_from_mode(mode) {
             FileType::Reg => {
                 assert!(size_of::<DInodeReg>() <= raw.len());
                 let dinode = unsafe {

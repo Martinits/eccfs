@@ -184,16 +184,44 @@ impl Into<fuser::FileType> for FileType {
 
 bitflags! {
     pub struct FilePerm: u16 {
-        const U_R = 0x0400;
-        const U_W = 0x0200;
-        const U_X = 0x0100;
-        const G_R = 0x0040;
-        const G_W = 0x0020;
-        const G_X = 0x0010;
-        const O_R = 0x0004;
-        const O_W = 0x0002;
-        const O_X = 0x0001;
+        const U_R = 0o0400;
+        const U_W = 0o0200;
+        const U_X = 0o0100;
+        const G_R = 0o0040;
+        const G_W = 0o0020;
+        const G_X = 0o0010;
+        const O_R = 0o0004;
+        const O_W = 0o0002;
+        const O_X = 0o0001;
     }
+}
+
+const PERM_MASK: u16 = 0o0777;
+
+pub fn get_ftype_from_mode(mode: u16) -> FileType {
+    FileType::from((mode >> 12) as u8)
+}
+
+pub fn get_perm_from_mode(mode: u16) -> FilePerm {
+    FilePerm::from_bits(mode & PERM_MASK).unwrap()
+}
+
+pub fn get_mode(tp: FileType, perm: FilePerm) -> u16 {
+    (Into::<u16>::into(tp) << 12) | (perm.bits() & PERM_MASK)
+}
+
+pub fn get_mode_from_libc_mode(libc_mode: u32) -> u16 {
+    let tp = libc_mode & libc::S_IFMT;
+    let tp: u16 = if tp == libc::S_IFREG {
+        0
+    } else if tp == libc::S_IFDIR {
+        1
+    } else if tp == libc::S_IFLNK {
+        2
+    } else {
+        panic!("Unsupported file type!");
+    };
+    (tp << 12) | ((libc_mode & PERM_MASK as u32) as u16)
 }
 
 #[derive(Debug, Eq, PartialEq, Clone)]

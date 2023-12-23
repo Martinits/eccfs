@@ -262,17 +262,9 @@ impl ROBuilder {
         } else {
             panic!("Unsupported file type!");
         };
-        let mode = m.mode();
-        let mut perm = 0;
-        // user perms
-        perm |= mode & 0o700;
-        // group perms
-        perm |= mode & 0o070;
-        // other perms
-        perm |= mode & 0o007;
 
         Ok(DInodeBase {
-            mode: get_mode(tp, FilePerm::from_bits(perm as u16).unwrap()),
+            mode: get_mode_from_libc_mode(m.mode()),
             nlinks: m.nlink() as u16,
             uid: m.uid(),
             gid: m.gid(),

@@ -2,22 +2,10 @@ use crate::rw_as_blob;
 use std::mem::size_of;
 use crate::vfs::*;
 
-pub fn get_ftype_from_mode(mode: u16) -> FileType {
-    FileType::from((mode >> 12) as u8)
-}
-
-pub fn get_perm_from_mode(mode: u16) -> FilePerm {
-    FilePerm::from_bits(mode & 0x0fff).unwrap()
-}
-
-pub fn get_mode(tp: FileType, perm: FilePerm) -> u16 {
-    (Into::<u16>::into(tp) << 12) | (perm.bits() & 0x0fff)
-}
-
 #[repr(C)]
 #[derive(Default)]
 pub struct DInodeBase {
-    /// mode bits, 4 bits for FTYPE and 12 for UGO RWX permissions
+    /// mode bits, 4 bits for FTYPE and 12 for UGO RWX permissions(only use 9 bits)
     /// FTYPE: 0 - reg, 1 - dir, 2 - lnk
     pub mode: u16,
 
