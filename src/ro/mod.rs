@@ -25,8 +25,7 @@ pub const NAME_MAX: u64 = u16::MAX as u64;
 pub struct ROFS {
     mode: FSMode,
     cache_data: bool,
-    backend_template: ROCache,
-    backend: Mutex<ROCache>,
+    backend: ROCache,
     sb: RwLock<SuperBlock>,
     inode_tbl: ROHashTree,
     dirent_tbl: ROHashTree,
@@ -81,8 +80,7 @@ impl ROFS {
         Ok(ROFS {
             mode,
             sb: RwLock::new(sb),
-            backend: Mutex::new(cac.clone()),
-            backend_template: cac,
+            backend: cac.clone(),
             cache_data: cache_data.is_some(),
             inode_tbl,
             dirent_tbl,
@@ -106,7 +104,7 @@ impl ROFS {
         Inode::new_from_raw(
             &ablk[offset as usize..],
             iid,
-            self.backend_template.clone(),
+            self.backend.clone(),
             self.mode.is_encrypted(),
             self.cache_data,
         )
@@ -157,7 +155,7 @@ impl FileSystem for ROFS {
         rwlock_read!(self.sb).get_fsinfo()
     }
 
-    fn fsync(&self) -> FsResult<()> {
+    fn fsync(&mut self) -> FsResult<()> {
         if let Some(ref icac) = self.icac {
             mutex_lock!(icac).flush_all(false)?;
         }
@@ -166,7 +164,7 @@ impl FileSystem for ROFS {
             mutex_lock!(de_cac).flush_all(false)?;
         }
 
-        mutex_lock!(self.backend).flush()?;
+        self.backend.flush()?;
 
         Ok(())
     }

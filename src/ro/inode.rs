@@ -161,7 +161,7 @@ impl Inode {
     }
 
     pub fn read_data(&self, mut offset: usize, to: &mut [u8]) -> FsResult<usize> {
-        if let InodeExt::Reg { ref data, .. } = self.ext {
+        if let InodeExt::Reg { data, .. } = &self.ext {
             let total = to.len();
             let mut done = 0;
             while done < total {

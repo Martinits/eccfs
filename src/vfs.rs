@@ -46,7 +46,7 @@ pub trait FileSystem: Sync + Send {
     }
 
     /// sync all filesystem, including metadata and user data
-    fn fsync(&self) -> FsResult<()> {
+    fn fsync(&mut self) -> FsResult<()> {
         Err(FsError::Unsupported)
     }
 
