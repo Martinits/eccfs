@@ -6,21 +6,26 @@ use std::mem;
 
 /// This module provides data in blocks
 
-mod mht {
+pub mod mht {
     use crate::*;
     use crate::crypto::*;
+    use std::io::Write;
 
-    const ENTRY_PER_BLK: u64 = BLK_SZ as u64 / KEY_ENTRY_SZ as u64;
-    const CHILD_PER_BLK: u64 = ENTRY_PER_BLK * 1 / 4;
-    const DATA_PER_BLK: u64 = ENTRY_PER_BLK * 3 / 4;
+    pub const ENTRY_PER_BLK: u64 = BLK_SZ as u64 / KEY_ENTRY_SZ as u64;
+    pub const CHILD_PER_BLK: u64 = ENTRY_PER_BLK * 1 / 4;
+    pub const DATA_PER_BLK: u64 = ENTRY_PER_BLK * 3 / 4;
 
     pub fn logi2phy(logi: u64) -> u64 {
-        let idx = logi / DATA_PER_BLK;
-        logi + idx + 1 + logi % DATA_PER_BLK
+        let nr_idx = logi.div_ceil(DATA_PER_BLK);
+        logi + nr_idx
     }
 
     pub fn logi2dataidx(logi: u64) -> u64 {
         logi % DATA_PER_BLK
+    }
+
+    pub fn next_sibling_phy(child_phy: u64) -> u64 {
+        child_phy + DATA_PER_BLK + 1
     }
 
     // pub fn logi2level(logi: u64) -> FsResult<u64> {
@@ -39,11 +44,19 @@ mod mht {
 
     // get idxblk's father's phypos and child_idx in father blk
     pub fn idxphy2father(idxphy: u64) -> (u64, u64) {
-        let idx1 = idxphy / (DATA_PER_BLK + 1) + 1;
-        let father1 = idx1 / CHILD_PER_BLK;
-        let fatherphy = (father1 - 1) * (DATA_PER_BLK + 1);
-        let child_idx = father1 % CHILD_PER_BLK;
+        let idx = idxphy / (DATA_PER_BLK + 1);
+        let father = (idx - 1) / CHILD_PER_BLK;
+        let fatherphy = father * (DATA_PER_BLK + 1);
+        let child_idx = (idx - 1) % CHILD_PER_BLK;
         (fatherphy, child_idx)
+    }
+
+    pub fn get_first_idx_child_phy(idxphy: u64) -> u64 {
+        idxphy * CHILD_PER_BLK + 1
+    }
+
+    pub fn get_phy_nr_blk(logi_nr_blk: u64) -> u64 {
+        logi_nr_blk + logi_nr_blk.div_ceil(DATA_PER_BLK)
     }
 
     pub enum EntryType {
@@ -52,7 +65,7 @@ mod mht {
     }
     pub use EntryType::*;
 
-    pub fn get_entry(blk: &Block, tp: EntryType) -> KeyEntry {
+    pub fn get_key_entry(blk: &Block, tp: EntryType) -> KeyEntry {
         let pos = match tp {
             Index(idx) => idx,
             Data(idx) => CHILD_PER_BLK + idx,
@@ -62,7 +75,26 @@ mod mht {
         ret.copy_from_slice(&blk[from .. from + KEY_ENTRY_SZ]);
         ret
     }
+
+    pub fn set_key_entry(blk: &mut Block, tp: EntryType, ke: &KeyEntry) -> FsResult<()> {
+        let pos = match tp {
+            Index(idx) => {
+                assert!(idx < CHILD_PER_BLK);
+                idx
+            },
+            Data(idx) => {
+                assert!(idx < DATA_PER_BLK);
+                CHILD_PER_BLK + idx
+            },
+        };
+        let mut writer: &mut [u8] = &mut blk[pos as usize * KEY_ENTRY_SZ ..];
+        let written = io_try!(writer.write(ke));
+        assert_eq!(written, KEY_ENTRY_SZ);
+        Ok(())
+    }
 }
+
+pub const HTREE_ROOT_BLK_PHY_POS: u64 = 0;
 
 // use features to separate impls for SGX and TDX+FUSE
 // for TDX+FUSE deployment, only cache index blocks, kernel will handle the left cache
@@ -80,7 +112,7 @@ impl ROHashTree {
         backend: ROCache,
         start: u64,
         length: u64,
-        root_hint: CacheMissHint,
+        root_hint: FSMode,
         cache_data: bool,
     ) -> Self {
         let encrypted = root_hint.is_encrypted();
@@ -91,7 +123,7 @@ impl ROHashTree {
             length,
             encrypted,
             cache_data,
-            root_hint,
+            root_hint: CacheMissHint::from_fsmode(root_hint, HTREE_ROOT_BLK_PHY_POS),
         }
     }
 
@@ -102,7 +134,9 @@ impl ROHashTree {
         }
 
         let data_phy = mht::logi2phy(pos);
-        if let Some(ablk) = mutex_lock!(self.backend).get_blk(data_phy, self.cache_data)? {
+        if let Some(ablk) = mutex_lock!(self.backend).get_blk(
+            self.start + data_phy, self.cache_data
+        )? {
             return Ok(ablk)
         }
 
@@ -113,14 +147,18 @@ impl ROHashTree {
 
         let first_cached_idx = if idxphy == 0 {
             // data is under root idx
-            mutex_lock!(self.backend).get_blk_hint(idxphy, true, self.root_hint.clone())?
+            mutex_lock!(self.backend).get_blk_hint(
+                self.start + idxphy, true, self.root_hint.clone()
+            )?
         } else {
             // find backward through the tree to the first cached idx blk
             let mut safe_cnt = 0;
             loop {
                 if safe_cnt >= MAX_LOOP_CNT {
                     panic!("Loop exceeds MAX count!");
-                } else if let Some(ablk) = mutex_lock!(self.backend).get_blk(idxphy, true)? {
+                } else if let Some(ablk) = mutex_lock!(self.backend).get_blk(
+                    self.start + idxphy, true
+                )? {
                     break ablk;
                 } else {
                     let (father, child_idx) = mht::idxphy2father(idxphy);
@@ -135,16 +173,18 @@ impl ROHashTree {
         let mut this_idx_ablk = first_cached_idx;
         while !idx_stack.is_empty() {
             let (child_idx, child_phy) = idx_stack.pop().unwrap();
-            let key_entry = mht::get_entry(&this_idx_ablk, mht::Index(child_idx));
+            let key_entry = mht::get_key_entry(&this_idx_ablk, mht::Index(child_idx));
             let hint = if self.encrypted {
                 let (key, mac): (Key128, MAC128) = unsafe {
                     mem::transmute(key_entry)
                 };
-                CacheMissHint::Encrypted(key, mac)
+                CacheMissHint::Encrypted(key, mac, child_phy)
             } else {
                 CacheMissHint::IntegrityOnly(key_entry)
             };
-            this_idx_ablk = mutex_lock!(self.backend).get_blk_hint(child_phy, true, hint)?;
+            this_idx_ablk = mutex_lock!(self.backend).get_blk_hint(
+                self.start + child_phy, true, hint
+            )?;
         }
         let data_ablk = this_idx_ablk;
         Ok(data_ablk)

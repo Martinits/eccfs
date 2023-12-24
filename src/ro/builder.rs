@@ -15,6 +15,7 @@ use std::ffi::OsString;
 use std::cmp::Ordering;
 use std::os::unix::fs::MetadataExt;
 use std::io::Write;
+use std::os::unix::fs::FileExt;
 
 
 const MAX_ENTRY_GROUP_LEN: usize = 16;
@@ -48,8 +49,9 @@ pub fn build_from_dir(
         image,
         to_dir,
         io_try!(fs::read_dir(from)).count(),
-        mode,
+        mode.clone(),
     )?;
+    let mut ht_builder = HTreeBuilder::new(mode.is_encrypted())?;
 
     // stack holds full paths
     let mut stack = vec![Some((ROOT_PATHBUF.into(), 0usize))];
@@ -82,7 +84,7 @@ pub fn build_from_dir(
                     )
                 );
             } else if m.is_file() {
-                let iid = builder.handle_reg(&pb)?;
+                let iid = builder.handle_reg(&pb, &mut ht_builder)?;
                 push_child_info(
                     &mut de_info,
                     fpb,
@@ -110,6 +112,8 @@ pub fn build_from_dir(
 
     let root_pb: PathBuf = ROOT_PATHBUF.into();
     builder.finalize(de_info.remove(&root_pb).unwrap())?;
+
+    // remove temp files
 
     Ok(())
 }
@@ -151,16 +155,23 @@ fn write_vec_as_bytes<T>(f: &mut File, v: &Vec<T>) -> FsResult<()> {
     Ok(())
 }
 
-fn seek_and_write(f: &mut File, seek: u64, b: &[u8]) -> FsResult<()> {
-    if io_try!(f.seek(SeekFrom::Start(seek))) != seek {
-        return Err(FsError::NotSeekable);
+fn write_file_at(f: &mut File, seek: u64, b: &[u8]) -> FsResult<()> {
+    if io_try!(f.write_at(b, seek)) != b.len() {
+        return Err(FsError::UnexpectedEof);
     }
-
-    io_try!(f.write_all(b));
+    // if io_try!(f.seek(SeekFrom::Start(seek))) != seek {
+    //     return Err(FsError::NotSeekable);
+    // }
+    //
+    // io_try!(f.write_all(b));
     Ok(())
 }
 
-fn get_file_sz(f: &mut File) -> FsResult<u64> {
+fn read_file_at(f: &mut File, seek: u64, b: &mut [u8]) -> FsResult<usize> {
+    Ok(io_try!(f.read_at(b, seek)))
+}
+
+fn get_file_pos(f: &mut File) -> FsResult<u64> {
     Ok(io_try!(f.seek(SeekFrom::Current(0))))
 }
 
@@ -181,8 +192,6 @@ struct ROBuilder {
     dtbl: File,
     dtbl_next_blk: usize,
     data: File,
-    kdk: (Key128, u64),
-    key_gen_counter: u64,
     next_inode: InodeID,
     root_inode_max_sz: u16,
 }
@@ -207,10 +216,6 @@ impl ROBuilder {
         to_dir.push(".data.eccfs");
         let data = io_try!(OpenOptions::new().write(true).create_new(true).open(&to_dir));
 
-        // init kdk
-        let mut kdk = [0u8; 16];
-        rand::thread_rng().fill_bytes(&mut kdk);
-
         // estimate root inode size
         let (nr_idx, _) = Self::estimate_idx(root_dir_nr_entry);
         let root_inode_max_sz: u16 = (size_of::<DInodeDirBase>()
@@ -224,8 +229,6 @@ impl ROBuilder {
             dtbl_next_blk: 0,
             ptbl,
             data,
-            kdk: (kdk, 0),
-            key_gen_counter: 0,
             next_inode: 0,
             root_inode_max_sz,
         })
@@ -251,6 +254,7 @@ impl ROBuilder {
             (pos, off)
         }
     }
+
     fn write_inode(&mut self, inode: &[u8]) -> FsResult<InodeID> {
         assert_eq!(inode.len() % INODE_ALIGN, 0);
 
@@ -260,7 +264,7 @@ impl ROBuilder {
             (pos, off) = self.jump_over_root_inode(pos + 1, 0);
         }
 
-        seek_and_write(
+        write_file_at(
             &mut self.itbl,
             pos * BLK_SZ as u64 + off as u64,
             inode,
@@ -279,7 +283,7 @@ impl ROBuilder {
     }
 
     fn write_root_inode(&mut self, rinode: &[u8]) -> FsResult<()> {
-        seek_and_write(
+        write_file_at(
             &mut self.itbl,
             1 * BLK_SZ as u64 + self.root_inode_max_sz as u64,
             rinode,
@@ -327,7 +331,7 @@ impl ROBuilder {
     fn handle_long_path(&mut self, path: &[u8], threshold: usize) -> FsResult<Vec<u8>> {
         if path.len() > threshold {
             // write to ptbl
-            let pos = io_try!(self.ptbl.seek(SeekFrom::Current(0)));
+            let pos = get_file_pos(&mut self.ptbl)?;
             io_try!(self.ptbl.write_all(path));
             Self::gen_short_name(&pos.to_le_bytes(), threshold)
         } else {
@@ -511,7 +515,7 @@ impl ROBuilder {
         // write this INodeID as all dir children's '..' and its own '.'
         dotdot_list.push(self_dot);
         for dd in dotdot_list {
-            seek_and_write(
+            write_file_at(
                 &mut self.dtbl,
                 dd,
                 unsafe {
@@ -527,20 +531,19 @@ impl ROBuilder {
         Ok((iid, dotdot))
     }
 
-    fn handle_reg(&mut self, path: &PathBuf) -> FsResult<InodeID> {
+    fn handle_reg(&mut self, path: &PathBuf, ht: &mut HTreeBuilder) -> FsResult<InodeID> {
         let dinode_base = Self::gen_inode_base(path)?;
 
-        let data_start = get_file_sz(&mut self.data)?;
+        let data_start = get_file_pos(&mut self.data)?;
+        assert!(data_start % BLK_SZ as u64 == 0);
 
         // generate hash tree
-        let mut f = io_try!(OpenOptions::new().read(true).open(path));
-
-        let (nr_blk, keys) = build_htree(&mut self.data, &mut f, self.mode.is_encrypted())?;
+        let (nr_blk, ke) = ht.build_htree(&mut self.data, path)?;
 
         let dinode_reg = DInodeReg {
             base: dinode_base,
-            crypto_blob: keys,
-            data_start,
+            crypto_blob: ke,
+            data_start: data_start / BLK_SZ as u64,
             data_len: nr_blk as u64,
         };
         let iid = self.write_inode(dinode_reg.as_ref())?;
@@ -576,11 +579,127 @@ impl ROBuilder {
     }
 }
 
-fn build_htree(
-    to: &mut File,
-    from: &mut File,
+
+struct HTreeBuilder {
+    kdk: (Key128, u64),
+    key_gen_counter: u32,
     encrypted: bool,
-) -> FsResult<(usize, KeyEntry)> {
-    // return size of htree in block, root block keys
-    Ok((0, [0u8; 32]))
+}
+
+impl HTreeBuilder {
+    fn new(encrypted: bool) -> FsResult<Self> {
+        // init kdk
+        let mut kdk = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut kdk);
+
+        Ok(Self {
+            kdk: (kdk, 0),
+            key_gen_counter: 0,
+            encrypted,
+        })
+    }
+
+    fn crypto_process_blk(&mut self, blk: &mut Block, pos: u64) -> FsResult<KeyEntry> {
+        let ke = if self.encrypted {
+            if self.kdk.1 >= 16 {
+                rand::thread_rng().fill_bytes(&mut self.kdk.0);
+                self.kdk.1 = 0;
+            }
+            let key = generate_random_key(&self.kdk.0, self.key_gen_counter, pos)?;
+            self.key_gen_counter += 1;
+
+            let mac = aes_gcm_128_blk_enc(blk, &key, pos)?;
+
+            unsafe {
+                std::mem::transmute((key, mac))
+            }
+        } else {
+            sha3_256_blk(blk)?
+        };
+
+        Ok(ke)
+    }
+
+    fn build_htree(
+        &mut self,
+        to: &mut File,
+        from: &PathBuf,
+    ) -> FsResult<(usize, KeyEntry)> {
+        // get file logical size
+        let logi_nr_blk = io_try!(fs::symlink_metadata(from)).size().div_ceil(BLK_SZ as u64);
+        // open source file
+        let mut f = io_try!(OpenOptions::new().read(true).open(from));
+        // get the htree sectio start (in blocks)
+        let mut to_start_blk = get_file_pos(to)?;
+        assert!(to_start_blk % BLK_SZ as u64 == 0);
+        to_start_blk /= BLK_SZ as u64;
+
+        let mut idx_blk = [0u8; BLK_SZ] as Block;
+        // map idx_phy_pos to its ke
+        let mut idx_ke = HashMap::new();
+
+        for logi_pos in (0..logi_nr_blk).rev() {
+            // read plain data block, padding 0 to integral block
+            let mut d = [0u8; BLK_SZ] as Block;
+            let _read = read_file_at(&mut f, logi_pos * BLK_SZ as u64, &mut d)?;
+            // process crypto
+            let phy_pos = mht::logi2phy(logi_pos);
+            let ke = self.crypto_process_blk(&mut d, phy_pos)?;
+            // write data block
+            write_file_at(&mut f, to_start_blk + phy_pos, &d)?;
+
+            // write ke to idx_blk
+            let ke_idx = mht::logi2dataidx(logi_pos);
+            mht::set_key_entry(
+                &mut idx_blk,
+                mht::EntryType::Data(ke_idx),
+                &ke,
+            )?;
+
+            // if the written ke is the first data ke (0) in the idx_blk,
+            // all its data block ke have been filled.
+            if ke_idx != 0 {
+                continue;
+            }
+
+            // all data blk of the idx_blk are filled, now process idx_blk
+            let idx_phy_pos = mht::phy2idxphy(phy_pos);
+            // fill child ke
+            let mut child_phy = mht::get_first_idx_child_phy(idx_phy_pos);
+            for i in 0..mht::CHILD_PER_BLK {
+                if let Some(ke) = idx_ke.remove(&child_phy) {
+                    mht::set_key_entry(
+                        &mut idx_blk,
+                        mht::EntryType::Index(i),
+                        &ke,
+                    )?;
+                } else {
+                    break;
+                }
+                child_phy = mht::next_sibling_phy(child_phy);
+            }
+            // process crypto
+            let ke = self.crypto_process_blk(&mut idx_blk, idx_phy_pos)?;
+            // add this idx_blk ke to the hashmap, for use of its father
+            assert!(idx_ke.insert(idx_phy_pos, ke).is_none());
+            // write idx block
+            write_file_at(&mut f, to_start_blk + idx_phy_pos, &idx_blk)?;
+            // switch to a new idx block
+            idx_blk = [0u8; BLK_SZ];
+        }
+
+        let root_ke = idx_ke.remove(&HTREE_ROOT_BLK_PHY_POS).unwrap();
+        assert!(idx_ke.is_empty());
+
+        let htree_nr_blk = mht::get_phy_nr_blk(logi_nr_blk);
+
+        // seek to end of this htree
+        let file_end = (to_start_blk + htree_nr_blk) * BLK_SZ as u64;
+        if io_try!(to.seek(SeekFrom::Start(file_end))) != file_end {
+            return Err(FsError::NotSeekable);
+        }
+
+        // return size of htree in block, root block keys
+        Ok((htree_nr_blk as usize, root_ke))
+    }
 }

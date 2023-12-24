@@ -8,8 +8,28 @@ use std::thread::{self, JoinHandle};
 use crate::crypto::*;
 
 
-pub type CacheMissHint = FSMode;
+#[derive(Clone)]
+pub enum CacheMissHint {
+    Encrypted(Key128, MAC128, u64), // key, mac, nonce
+    IntegrityOnly(Hash256),
+}
 
+impl CacheMissHint {
+    pub fn from_fsmode(fsmode: FSMode, nonce: u64) -> Self {
+        match fsmode {
+            FSMode::IntegrityOnly(hash) => CacheMissHint::IntegrityOnly(hash),
+            FSMode::Encrypted(key, mac) => CacheMissHint::Encrypted(key, mac, nonce),
+        }
+    }
+
+    pub fn is_encrypted(&self) -> bool {
+        if let Self::Encrypted(_, _, _) = self {
+            true
+        } else {
+            false
+        }
+    }
+}
 enum ROCacheReq {
     Get {
         pos: u64,
@@ -151,8 +171,8 @@ impl ROCacheServer {
     fn fetch_from_backend(&mut self, pos: u64, hint: CacheMissHint) -> FsResult<Block> {
         let mut blk = self.backend.read_blk(pos)?;
         match hint {
-            CacheMissHint::Encrypted(key, mac) => {
-                aes_gcm_128_blk_dec(&mut blk, &key, &mac, pos)?;
+            CacheMissHint::Encrypted(key, mac, nonce) => {
+                aes_gcm_128_blk_dec(&mut blk, &key, &mac, nonce)?;
             }
             CacheMissHint::IntegrityOnly(hash) => {
                 sha3_256_blk_check(&blk, &hash)?;
