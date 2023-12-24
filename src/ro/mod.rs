@@ -117,15 +117,20 @@ impl ROFS {
         let inode_size = match itp {
             FileType::Reg => size_of::<DInodeReg>(),
             FileType::Dir => {
-                raw.resize(size_of::<DInodeDirBase>(), 0);
-                if self.inode_tbl.read_exact(start, &mut raw)? != raw.len() {
-                    return Err(FsError::UnexpectedEof);
+                if di_base.size <= DE_INLINE_MAX {
+                    size_of::<DInodeBase>()
+                        + (di_base.size as usize + 2) * size_of::<DirEntry>()
+                } else {
+                    raw.resize(size_of::<DInodeDirBaseNoInline>(), 0);
+                    if self.inode_tbl.read_exact(start, &mut raw)? != raw.len() {
+                        return Err(FsError::UnexpectedEof);
+                    }
+                    let di_dir_base = unsafe {
+                        &*(raw.as_ptr() as *const DInodeDirBaseNoInline)
+                    };
+                    size_of::<DInodeDirBaseNoInline>()
+                        + di_dir_base.nr_idx as usize * size_of::<EntryIndex>()
                 }
-                let di_dir_base = unsafe {
-                    &*(raw.as_ptr() as *const DInodeDirBase)
-                };
-                size_of::<DInodeDirBase>()
-                    + di_dir_base.nr_idx as usize * size_of::<EntryIndex>()
             }
             FileType::Lnk => size_of::<DInodeLnk>(),
         };
@@ -184,6 +189,23 @@ impl ROFS {
             )?.into()
         };
         Ok(name)
+    }
+
+    fn find_de_in_list(
+        &self,
+        de_list: &[DirEntry],
+        hash: u64,
+        name: &OsStr
+    ) -> FsResult<Option<InodeID>> {
+        for de in de_list.iter().filter(
+            |de| de.hash == hash
+        ) {
+            let real_name = self.get_dir_ent_name(de)?;
+            if real_name.as_str() == name {
+                return Ok(Some(de.ipos))
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -246,61 +268,73 @@ impl FileSystem for ROFS {
         // which is too large to stick to memory.
         // This only influences SGX deployments, not FUSE,
         // because FUSE leverages kernel's dir entry cache.
-        if let Some((de_list_start, gstart, glen)) = self.get_inode(iid)?.lookup_index(name)? {
-            let hash = half_md4(name.as_encoded_bytes())?;
 
-            let step = size_of::<DirEntry>();
-            let (mut pos, mut off) = pos64_add(
-                pos64_split(de_list_start),
-                (gstart * step) as u64
-            );
+        let hash = half_md4(name.as_encoded_bytes())?;
+        match self.get_inode(iid)?.lookup_index(name)? {
+            LookUpInfo::External(de_list_start, gstart, glen) => {
+                let step = size_of::<DirEntry>();
+                let (mut pos, mut off) = pos64_add(
+                    pos64_split(de_list_start),
+                    (gstart * step) as u64
+                );
 
-            let mut done = 0;
-            while done < glen {
-                let ablk = self.dirent_tbl.get_blk(pos)?;
-                let round = (glen - done).min((BLK_SZ - off as usize) / step);
-                let ents = unsafe {
-                    std::slice::from_raw_parts(
-                        ablk[off as usize..].as_ptr() as *const DirEntry, round)
-                };
-                for ent in ents.iter().filter(
-                    |ent| ent.hash == hash
-                ) {
-                    let real_name = self.get_dir_ent_name(ent)?;
-                    if real_name.as_str() == name {
-                        return Ok(Some(ent.ipos))
+                let mut done = 0;
+                while done < glen {
+                    let ablk = self.dirent_tbl.get_blk(pos)?;
+                    let round = (glen - done).min((BLK_SZ - off as usize) / step);
+                    let de_list = unsafe {
+                        std::slice::from_raw_parts(
+                            ablk[off as usize..].as_ptr() as *const DirEntry, round)
+                    };
+                    if let Some(iid) = self.find_de_in_list(de_list, hash, name)? {
+                        return Ok(Some(iid));
                     }
+                    done += round;
+                    (pos, off) = pos64_add((pos, off as u16), (step * round) as u64);
                 }
-                done += round;
-                (pos, off) = pos64_add((pos, off as u16), (step * round) as u64);
+                Ok(None)
             }
+            LookUpInfo::Inline(de_list) => {
+                Ok(self.find_de_in_list(de_list, hash, name)?)
+            }
+            LookUpInfo::NonExistent => Ok(None),
         }
-        Ok(None)
     }
 
     fn listdir(&self, iid: InodeID) -> FsResult<Vec<(InodeID, String, FileType)>> {
-        let (de_start, num) = self.get_inode(iid)?.get_entry_list_info()?;
-        let (pos, off) = pos64_split(de_start);
+        match self.get_inode(iid)?.get_entry_list_info()? {
+            DirEntryInfo::External(de_start, num) => {
+                let (pos, off) = pos64_split(de_start);
 
-        let mut list = vec![DirEntry::default(); num];
-        let to = unsafe {
-            std::slice::from_raw_parts_mut(
-                list.as_mut_ptr() as *mut u8,
-                num * size_of::<DirEntry>(),
-            )
-        };
-        let read = self.dirent_tbl.read_exact(pos as usize * BLK_SZ + off as usize, to)?;
+                let mut de_list = vec![DirEntry::default(); num];
+                let to = unsafe {
+                    std::slice::from_raw_parts_mut(
+                        de_list.as_mut_ptr() as *mut u8,
+                        num * size_of::<DirEntry>(),
+                    )
+                };
+                let read = self.dirent_tbl.read_exact(pos as usize * BLK_SZ + off as usize, to)?;
 
-        if read != num * size_of::<DirEntry>() {
-            Err(FsError::InvalidData)
-        } else {
-            let mut ret = Vec::with_capacity(num);
-            for ent in list.into_iter() {
-                let name = self.get_dir_ent_name(&ent)?;
+                if read != num * size_of::<DirEntry>() {
+                    Err(FsError::InvalidData)
+                } else {
+                    let mut ret = Vec::with_capacity(num);
+                    for de in de_list.into_iter() {
+                        let name = self.get_dir_ent_name(&de)?;
 
-                ret.push((ent.ipos, name, FileType::from(ent.tp)));
+                        ret.push((de.ipos, name, FileType::from(de.tp)));
+                    }
+                    Ok(ret)
+                }
             }
-            Ok(ret)
+            DirEntryInfo::Inline(de_list) => {
+                let mut ret = Vec::with_capacity(de_list.len());
+                for de in de_list {
+                    let name = self.get_dir_ent_name(de)?;
+                    ret.push((de.ipos, name, FileType::from(de.tp)));
+                }
+                Ok(ret)
+            }
         }
     }
 }

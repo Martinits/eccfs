@@ -80,8 +80,14 @@ rw_as_blob!(DirEntry);
 
 pub const DE_MAX_INLINE_NAME: usize = 12;
 
+// di_base(32)
+// dot&dotdot: 2*dir_entry(32)
+// 13*dir_entry(32)
+// = 512Bytes
+pub const DE_INLINE_MAX: u64 = 13;
+
 #[repr(C)]
-pub struct DInodeDirBase {
+pub struct DInodeDirBaseNoInline {
     pub base: DInodeBase,
 
     /// first entry position of dir entry list in dir entry table
@@ -94,11 +100,11 @@ pub struct DInodeDirBase {
     /// padding
     pub _padding: u32,
 }
-rw_as_blob!(DInodeDirBase);
+rw_as_blob!(DInodeDirBaseNoInline);
 
 #[repr(C)]
 pub struct DInodeDir {
-    pub dir_base: DInodeDirBase,
+    pub dir_base: DInodeDirBaseNoInline,
 
     /// index list
     pub idx_list: [EntryIndex],
@@ -110,7 +116,7 @@ impl AsRef<[u8]> for DInodeDir {
         let ptr = self as *const DInodeDir as *const u8;
         unsafe {
             std::slice::from_raw_parts(ptr,
-                size_of::<DInodeDirBase>()
+                size_of::<DInodeDirBaseNoInline>()
                 + self.dir_base.nr_idx as usize * size_of::<EntryIndex>()
             )
         }
@@ -122,7 +128,7 @@ impl AsMut<[u8]> for DInodeDir {
         let ptr = self as *mut DInodeDir as *mut u8;
         unsafe {
             std::slice::from_raw_parts_mut(ptr,
-                size_of::<DInodeDirBase>()
+                size_of::<DInodeDirBaseNoInline>()
                 + self.dir_base.nr_idx as usize * size_of::<EntryIndex>()
             )
         }

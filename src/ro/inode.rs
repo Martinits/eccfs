@@ -8,6 +8,17 @@ use crate::bcache::*;
 use std::ffi::OsStr;
 use crate::crypto::half_md4;
 
+pub enum DirEntryInfo<'a> {
+    Inline(&'a Vec<DirEntry>),
+    External(u64, usize),
+}
+
+pub enum LookUpInfo<'a> {
+    NonExistent,
+    Inline(&'a Vec<DirEntry>),
+    External(u64, usize, usize),
+}
+
 #[derive(Clone)]
 pub enum LnkName {
     Short(String),
@@ -23,6 +34,9 @@ enum InodeExt {
     Dir {
         de_list_start: u64,
         idx_list: Vec<EntryIndex>,
+    },
+    DirInline {
+        de_list: Vec<DirEntry>, // include . and ..
     },
     Lnk(LnkName),
 }
@@ -79,42 +93,62 @@ impl Inode {
                 })
             }
             FileType::Dir => {
-                assert!(size_of::<DInodeDirBase>() <= raw.len());
+                assert!(size_of::<DInodeBase>() <= raw.len());
                 let dinode_base = unsafe {
-                    &*(raw.as_ptr() as *const DInodeDirBase)
+                    &*(raw.as_ptr() as *const DInodeBase)
                 };
 
-                let nr_idx = dinode_base.nr_idx as usize;
-
-                let idx_list = if nr_idx != 0 {
-                    let idx_start = size_of::<DInodeDirBase>();
-                    assert!(idx_start + nr_idx * size_of::<EntryIndex>() == raw.len());
-                    Vec::from(unsafe {
+                let nr_de = dinode_base.size;
+                let ext = if nr_de <= DE_INLINE_MAX {
+                    // inline dir entry
+                    let de_start = size_of::<DInodeBase>();
+                    let nr_de_dot = nr_de + 2;
+                    assert!(de_start + nr_de_dot as usize * size_of::<DirEntry>() == raw.len());
+                    let de_list = Vec::from(unsafe {
                         std::slice::from_raw_parts(
-                            raw[idx_start..].as_ptr() as *const EntryIndex,
-                            nr_idx
+                            raw[de_start..].as_ptr() as *const DirEntry,
+                            nr_de_dot as usize,
                         )
-                    })
+                    });
+                    InodeExt::DirInline {
+                        de_list,
+                    }
                 } else {
-                    vec![]
+                    assert!(size_of::<DInodeDirBaseNoInline>() <= raw.len());
+                    let di_dir_base = unsafe {
+                        &*(raw.as_ptr() as *const DInodeDirBaseNoInline)
+                    };
+                    let nr_idx = di_dir_base.nr_idx as usize;
+                    let idx_list = if nr_idx != 0 {
+                        let idx_start = size_of::<DInodeDirBaseNoInline>();
+                        assert!(idx_start + nr_idx * size_of::<EntryIndex>() == raw.len());
+                        Vec::from(unsafe {
+                            std::slice::from_raw_parts(
+                                raw[idx_start..].as_ptr() as *const EntryIndex,
+                                nr_idx,
+                            )
+                        })
+                    } else {
+                        vec![]
+                    };
+                    InodeExt::Dir {
+                        de_list_start: di_dir_base.de_list_start,
+                        idx_list,
+                    }
                 };
 
-                let ibase = &dinode_base.base;
                 Ok(Self {
                     iid,
                     tp: FileType::Dir,
-                    perm: get_perm_from_mode(ibase.mode),
-                    nlinks: ibase.nlinks,
-                    uid: ibase.uid,
-                    gid: ibase.gid,
-                    atime: SystemTime::UNIX_EPOCH + Duration::from_secs(ibase.atime as u64),
-                    ctime: SystemTime::UNIX_EPOCH + Duration::from_secs(ibase.ctime as u64),
-                    mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(ibase.mtime as u64),
-                    size: ibase.size as usize,
-                    ext: InodeExt::Dir {
-                        de_list_start: dinode_base.de_list_start,
-                        idx_list,
-                    }
+                    perm: get_perm_from_mode(dinode_base.mode),
+                    nlinks: dinode_base.nlinks,
+                    uid: dinode_base.uid,
+                    gid: dinode_base.gid,
+                    atime: SystemTime::UNIX_EPOCH + Duration::from_secs(dinode_base.atime as u64),
+                    ctime: SystemTime::UNIX_EPOCH + Duration::from_secs(dinode_base.ctime as u64),
+                    mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(dinode_base.mtime as u64),
+                    size: dinode_base.size as usize,
+                    ext,
                 })
             }
             FileType::Lnk => {
@@ -176,8 +210,16 @@ impl Inode {
     pub fn get_meta(&self) -> FsResult<Metadata> {
         Ok(Metadata {
             iid: self.iid,
-            size: self.size as u64,
-            blocks: self.size.div_ceil(BLK_SZ) as u64,
+            size: if self.tp == FileType::Lnk {
+                0
+            } else {
+                self.size as u64
+            },
+            blocks: if self.tp == FileType::Reg {
+                self.size.div_ceil(BLK_SZ) as u64
+            } else {
+                0
+            },
             atime: self.atime,
             ctime: self.ctime,
             mtime: self.mtime,
@@ -198,35 +240,45 @@ impl Inode {
     }
 
     // return de_list_start(pos64), nr entry
-    pub fn get_entry_list_info(&self) -> FsResult<(u64, usize)> {
-        if let InodeExt::Dir{de_list_start, ..} = self.ext {
-            Ok((de_list_start, self.size))
-        } else {
-            Err(FsError::PermissionDenied)
+    pub fn get_entry_list_info<'a>(&'a self) -> FsResult<DirEntryInfo<'a>> {
+        match &self.ext {
+            InodeExt::Dir{de_list_start, ..} => {
+                Ok(DirEntryInfo::External(*de_list_start, self.size))
+            },
+            InodeExt::DirInline { de_list } => Ok(DirEntryInfo::Inline(de_list)),
+            _ => Err(FsError::PermissionDenied),
         }
     }
 
     // return de_list_start(pos64), group_start(num of entry), group length
-    pub fn lookup_index(&self, name: &OsStr) -> FsResult<Option<(u64, usize, usize)>> {
-        if let InodeExt::Dir{ref idx_list, de_list_start} = self.ext {
-            if idx_list.len() == 0 {
-                // no idx, need to search from the first entry
-                // 2 because first two are . and ..
-                return Ok(Some((de_list_start, 2, self.size)))
-            }
-            let hash = half_md4(name.as_encoded_bytes())?;
-            if hash < idx_list[0].hash {
-                // hash is smaller than smallest(first) idx, so it doesn't exist
-                Ok(None)
-            } else if let Some(EntryIndex{position, group_len, ..}) = idx_list.iter().find(
-                |&ent| hash >= ent.hash
-            ) {
-                Ok(Some((de_list_start, *position as usize, *group_len as usize)))
-            } else {
-                Err(FsError::IncompatibleMetadata)
-            }
-        } else {
-            Err(FsError::PermissionDenied)
+    pub fn lookup_index<'a>(&'a self, name: &OsStr) -> FsResult<LookUpInfo<'a>> {
+        match &self.ext {
+            InodeExt::Dir{ref idx_list, de_list_start} => {
+                if idx_list.len() == 0 {
+                    // no idx, need to search from the first entry
+                    // 2 because first two are . and ..
+                    return Ok(LookUpInfo::External(*de_list_start, 2, self.size))
+                }
+                let hash = half_md4(name.as_encoded_bytes())?;
+                if hash < idx_list[0].hash {
+                    // hash is smaller than smallest(first) idx, so it doesn't exist
+                    Ok(LookUpInfo::NonExistent)
+                } else if let Some(EntryIndex {
+                    position, group_len, ..
+                }) = idx_list.iter().find(
+                    |&ent| hash >= ent.hash
+                ) {
+                    Ok(LookUpInfo::External(
+                        *de_list_start,
+                        *position as usize,
+                        *group_len as usize
+                    ))
+                } else {
+                    Err(FsError::IncompatibleMetadata)
+                }
+            },
+            InodeExt::DirInline { de_list } => Ok(LookUpInfo::Inline(de_list)),
+            _ => Err(FsError::PermissionDenied),
         }
     }
 }

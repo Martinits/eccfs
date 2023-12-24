@@ -21,7 +21,13 @@ use std::os::unix::fs::FileExt;
 
 const MAX_ENTRY_GROUP_LEN: usize = 16;
 
-type ChildInfo = (PathBuf, FileType, InodeID, Option<u64>);
+#[derive(Clone)]
+enum DotDotPos {
+    InodeTable(u64),
+    DirEntryTable(u64),
+}
+
+type ChildInfo = (PathBuf, FileType, InodeID, Option<DotDotPos>);
 
 /// build a rofs image named [`to`] from all files under [`from`]
 pub fn build_from_dir(
@@ -220,7 +226,7 @@ impl ROBuilder {
 
         // estimate root inode size
         let (nr_idx, _) = Self::estimate_idx(root_dir_nr_entry);
-        let root_inode_max_sz: u16 = (size_of::<DInodeDirBase>()
+        let root_inode_max_sz: u16 = (size_of::<DInodeDirBaseNoInline>()
                             + size_of::<EntryIndex>() * nr_idx) as u16;
         assert_eq!(root_inode_max_sz as usize % INODE_ALIGN, 0);
 
@@ -340,20 +346,14 @@ impl ROBuilder {
         }
     }
 
-    fn write_dir_entries(
+    fn gen_dir_entries(
         &mut self,
         mytp: FileType,
         de_list_raw: Vec<DirEntryRaw>
-    ) -> FsResult<(u64, u64, u64)> {
+    ) -> FsResult<Vec<DirEntry>> {
 
-        let nr_de = de_list_raw.len() + 2;
-        let de_start_raw = get_file_pos(&mut self.dtbl)?;
-        assert!(de_start_raw as usize % size_of::<DirEntry>() == 0);
-        let de_start_pos = de_start_raw / BLK_SZ as u64;
-        let de_start_off = de_start_raw % BLK_SZ as u64;
-
-        // write dot and dotdot first
-        let mut de_list = Vec::with_capacity(nr_de);
+        // generate dot and dotdot first
+        let mut de_list = Vec::with_capacity(de_list_raw.len() + 2);
         de_list.push(
             DirEntry {
                 hash: 0,
@@ -393,6 +393,23 @@ impl ROBuilder {
                     )?.try_into().unwrap(),
             });
         }
+
+        Ok(de_list)
+    }
+
+    fn write_dir_entries(
+        &mut self,
+        mytp: FileType,
+        de_list_raw: Vec<DirEntryRaw>
+    ) -> FsResult<(u64, u64, u64)> {
+
+        let de_start_raw = get_file_pos(&mut self.dtbl)?;
+        assert!(de_start_raw as usize % size_of::<DirEntry>() == 0);
+        let de_start_pos = de_start_raw / BLK_SZ as u64;
+        let de_start_off = de_start_raw % BLK_SZ as u64;
+
+        let de_list = self.gen_dir_entries(mytp, de_list_raw)?;
+
         write_vec_as_bytes(&mut self.dtbl, &de_list)?;
 
         // return de_start(pos64) and dotdot position(in bytes of the whole de_tbl)
@@ -404,22 +421,56 @@ impl ROBuilder {
         ))
     }
 
+    fn gen_entry_idx(de_list_raw: &Vec<DirEntryRaw>) -> Vec<EntryIndex> {
+        assert!(de_list_raw.len() > DE_INLINE_MAX as usize);
+
+        let mut deidx: Vec<EntryIndex> = Vec::new();
+        let (max_nr_deidx, min_grp_len) = Self::estimate_idx(de_list_raw.len());
+        if max_nr_deidx != 0 {
+            let mut cur = 0;
+            while cur < de_list_raw.len() {
+                // find next idx point
+                let grp_start = cur;
+                cur += min_grp_len;
+                if cur >= de_list_raw.len() {
+                    cur = de_list_raw.len()
+                }
+                // include all following entries with same hash
+                let same_hash = de_list_raw.get(cur - 1).unwrap().hash;
+                while cur < de_list_raw.len() {
+                    if de_list_raw.get(cur).unwrap().hash != same_hash {
+                        break;
+                    }
+                    cur += 1;
+                }
+                // grp_start .. cur is a group
+                deidx.push(EntryIndex {
+                    hash: de_list_raw.get(grp_start).unwrap().hash,
+                    position: grp_start as u32 + 2,
+                    group_len: (cur - grp_start) as u32,
+                });
+            }
+        }
+
+        deidx
+    }
+
     fn handle_dir(
         &mut self,
         path: &PathBuf,
         child_info: Vec<ChildInfo>,
         is_root: bool,
-    ) -> FsResult<(InodeID, u64)> {
+    ) -> FsResult<(InodeID, DotDotPos)> {
 
         let mut dotdot_list = Vec::new();
         for (_, tp, _, dotdot) in child_info.iter() {
             if let Some(dotdot) = dotdot {
                 assert!(*tp == FileType::Dir);
-                dotdot_list.push(*dotdot);
+                dotdot_list.push(dotdot.clone());
             }
         }
 
-        let mut de_raw_list: Vec<DirEntryRaw> = child_info.into_iter().map(
+        let mut de_list_raw: Vec<DirEntryRaw> = child_info.into_iter().map(
             |(name, tp, iid, _)| {
                 let name = name.into_os_string();
                 assert!(name.len() < NAME_MAX as usize);
@@ -431,7 +482,7 @@ impl ROBuilder {
                 }
             }
         ).collect();
-        de_raw_list.sort_by(
+        de_list_raw.sort_by(
             |a, b| {
                 // compare dir entry with hash first, then name
                 if a.hash < b.hash {
@@ -448,88 +499,116 @@ impl ROBuilder {
             }
         );
 
-        // generting entry index
-        let mut deidx: Vec<EntryIndex> = Vec::new();
-        let (max_nr_deidx, min_grp_len) = Self::estimate_idx(de_raw_list.len());
-        if max_nr_deidx != 0 {
-            let mut cur = 0;
-            while cur < de_raw_list.len() {
-                // find next idx point
-                let grp_start = cur;
-                cur += min_grp_len;
-                if cur >= de_raw_list.len() {
-                    cur = de_raw_list.len()
-                }
-                // include all following entries with same hash
-                let same_hash = de_raw_list.get(cur - 1).unwrap().hash;
-                while cur < de_raw_list.len() {
-                    if de_raw_list.get(cur).unwrap().hash != same_hash {
-                        break;
-                    }
-                    cur += 1;
-                }
-                // grp_start .. cur is a group
-                deidx.push(EntryIndex {
-                    hash: de_raw_list.get(grp_start).unwrap().hash,
-                    position: grp_start as u32 + 2,
-                    group_len: (cur - grp_start) as u32,
-                });
-            }
-        }
-
-        // write dir entries
-        let inode_base_size = de_raw_list.len() as u64;
-        let (de_list_start, dotdot, self_dot)
-            = self.write_dir_entries(Self::gen_inode_tp(path)?, de_raw_list)?;
-
         // dinode dir base
         let mut dinode_base = Self::gen_inode_base(path)?;
+        let inode_base_size = de_list_raw.len() as u64;
         // for dir inodes, size represents entry num without . and ..
         dinode_base.size = inode_base_size;
-        let dir_base = DInodeDirBase {
-            base: dinode_base,
-            de_list_start,
-            nr_idx: deidx.len() as u32,
-            _padding: 0,
+
+        let (dinode_bytes, dot) = if de_list_raw.len() <= DE_INLINE_MAX as usize {
+            // inline de
+            let de_list = self.gen_dir_entries(Self::gen_inode_tp(path)?, de_list_raw)?;
+
+            // combine to parts of dinodedir to u8 slice
+            let de_list_raw_sz = de_list.len() * size_of::<DirEntry>();
+            let mut dinode_bytes = Vec::with_capacity(
+                size_of::<DInodeBase>() + de_list_raw_sz
+            );
+            dinode_bytes.extend_from_slice(dinode_base.as_ref());
+            dinode_bytes.extend_from_slice(
+                unsafe {
+                    std::slice::from_raw_parts(
+                        de_list.as_ptr() as *const u8,
+                        de_list_raw_sz,
+                    )
+                }
+            );
+            (dinode_bytes, None)
+        } else {
+            // generting entry index
+            let deidx = Self::gen_entry_idx(&de_list_raw);
+            // write dir entries
+            let (de_list_start, dotdot, self_dot)
+                = self.write_dir_entries(Self::gen_inode_tp(path)?, de_list_raw)?;
+
+            let dir_base = DInodeDirBaseNoInline {
+                base: dinode_base,
+                de_list_start,
+                nr_idx: deidx.len() as u32,
+                _padding: 0,
+            };
+            // combine to parts of dinodedir to u8 slice
+            let mut dinode_bytes = Vec::with_capacity(
+                size_of::<DInodeDirBaseNoInline>() + deidx.len() * size_of::<EntryIndex>()
+            );
+            dinode_bytes.extend_from_slice(dir_base.as_ref());
+            dinode_bytes.extend_from_slice(
+                unsafe {
+                    std::slice::from_raw_parts(
+                        deidx.as_ptr() as *const u8,
+                        deidx.len() * size_of::<EntryIndex>()
+                    )
+                }
+            );
+            (dinode_bytes, Some((dotdot, self_dot)))
         };
 
-        // combine to parts of dinodedir to u8 slice, then write
-        let mut dinode_bytes = Vec::with_capacity(
-            size_of::<DInodeDirBase>() + deidx.len() * size_of::<EntryIndex>()
-        );
-        dinode_bytes.extend_from_slice(dir_base.as_ref());
-        dinode_bytes.extend_from_slice(
-            unsafe {
-                std::slice::from_raw_parts(
-                    deidx.as_ptr() as *const u8,
-                    deidx.len() * size_of::<EntryIndex>()
-                )
-            }
-        );
         let iid = self.write_inode(dinode_bytes.as_slice(), is_root)?;
 
         // write this INodeID as all dir children's '..' and its own '.'
-        dotdot_list.push(self_dot);
-        if is_root {
-            // root inode's dotdot is itself
-            dotdot_list.push(dotdot);
-        }
+        let ret = if let Some((dotdot, self_dot)) = dot {
+            // no inline de
+            dotdot_list.push(DotDotPos::DirEntryTable(self_dot));
+            if is_root {
+                // root inode's dotdot is itself
+                dotdot_list.push(DotDotPos::DirEntryTable(dotdot));
+            }
+            (iid, DotDotPos::DirEntryTable(dotdot))
+        } else {
+            // inline de
+            let (pos, off) = pos64_split(iid);
+            let di_inline_start =
+                pos * BLK_SZ as u64 + off as u64
+                + size_of::<DInodeBase>() as u64;
+            let dotdot = di_inline_start + size_of::<DirEntry>() as u64 + 8;
+            let self_dot = di_inline_start + 8;
+
+            dotdot_list.push(DotDotPos::InodeTable(self_dot));
+            if is_root {
+                // root inode's dotdot is itself
+                dotdot_list.push(DotDotPos::InodeTable(dotdot));
+            }
+            (iid, DotDotPos::DirEntryTable(dotdot))
+        };
+
+        let iid_bytes = unsafe {
+            std::slice::from_raw_parts(
+                &iid as *const u64 as *const u8,
+                size_of_val(&iid),
+            )
+        };
         for dd in dotdot_list {
-            write_file_at(
-                &mut self.dtbl,
-                dd,
-                unsafe {
-                    std::slice::from_raw_parts(
-                        &iid as *const u64 as *const u8,
-                        size_of_val(&iid),
-                    )
-                },
-            )?;
+            match dd {
+                DotDotPos::DirEntryTable(pos) => {
+                    write_file_at(
+                        &mut self.dtbl,
+                        pos,
+                        iid_bytes,
+                    )?;
+                }
+                DotDotPos::InodeTable(pos) => {
+                    write_file_at(
+                        &mut self.itbl,
+                        pos,
+                        iid_bytes,
+                    )?;
+                }
+            }
         }
 
         // return this inode's iid and it's byte position of dotdot InodeID
         // if is_root == true, the second return value is useless
-        Ok((iid, dotdot))
+        Ok(ret)
     }
 
     fn handle_reg(&mut self, path: &PathBuf, ht: &mut HTreeBuilder) -> FsResult<InodeID> {
