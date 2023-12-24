@@ -222,6 +222,7 @@ impl ROBuilder {
         let (nr_idx, _) = Self::estimate_idx(root_dir_nr_entry);
         let root_inode_max_sz: u16 = (size_of::<DInodeDirBase>()
                             + size_of::<EntryIndex>() * nr_idx) as u16;
+        assert_eq!(root_inode_max_sz as usize % INODE_ALIGN, 0);
 
         Ok(Self {
             encrypted,
@@ -248,9 +249,11 @@ impl ROBuilder {
         (nr_idx, nr_de / nr_idx)
     }
 
-    fn jump_over_root_inode(&self, pos: u64, off: u16) -> (u64, u16) {
-        if pos == 1 && off < self.root_inode_max_sz {
-            // jump over root_inode at blk 1
+    fn jump_over_root_inode(&self, pos: u64, off: u16, sz: usize) -> (u64, u16) {
+        // every pos and off is filter by this funciton,
+        // so they can not be inside root_inode
+        assert!(!(pos == 1 && off < self.root_inode_max_sz));
+        if pos == 0 && off as usize + sz > BLK_SZ {
             (1, self.root_inode_max_sz)
         } else {
             (pos, off)
@@ -271,10 +274,7 @@ impl ROBuilder {
         assert_eq!(inode.len() % INODE_ALIGN, 0);
 
         let (mut pos, mut off) = pos64_split(self.next_inode);
-        if BLK_SZ - off as usize % BLK_SZ > inode.len() {
-            // not enough space in current block, move to next
-            (pos, off) = self.jump_over_root_inode(pos + 1, 0);
-        }
+        (pos, off) = self.jump_over_root_inode(pos, off, inode.len());
 
         write_file_at(
             &mut self.itbl,
@@ -286,7 +286,6 @@ impl ROBuilder {
 
         // set new next_inode
         (pos, off) = pos64_add((pos, off), inode.len() as u64);
-        (pos, off) = self.jump_over_root_inode(pos, off);
         self.next_inode = pos64_join(pos, off);
 
         Ok(ret)

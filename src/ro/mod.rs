@@ -100,10 +100,47 @@ impl ROFS {
 
     fn fetch_inode(&self, iid: InodeID) -> FsResult<Inode> {
         let (bpos, offset) = pos64_split(iid);
-        let ablk = self.inode_tbl.get_blk(bpos)?;
+        assert!(offset as usize % INODE_ALIGN == 0);
+
+        // try read dinode_base to get inode type
+        let mut raw = vec![0u8; size_of::<DInodeBase>()];
+        let start = bpos as usize * BLK_SZ + offset as usize;
+        if self.inode_tbl.read_exact(start, &mut raw)? != raw.len() {
+            return Err(FsError::UnexpectedEof);
+        }
+        let di_base = unsafe {
+            &*(raw.as_ptr() as *const DInodeBase)
+        };
+        let itp = get_ftype_from_mode(di_base.mode);
+
+        // determine inode size from type
+        let inode_size = match itp {
+            FileType::Reg => size_of::<DInodeReg>(),
+            FileType::Dir => {
+                raw.resize(size_of::<DInodeDirBase>(), 0);
+                if self.inode_tbl.read_exact(start, &mut raw)? != raw.len() {
+                    return Err(FsError::UnexpectedEof);
+                }
+                let di_dir_base = unsafe {
+                    &*(raw.as_ptr() as *const DInodeDirBase)
+                };
+                size_of::<DInodeDirBase>()
+                    + di_dir_base.nr_idx as usize * size_of::<EntryIndex>()
+            }
+            FileType::Lnk => size_of::<DInodeLnk>(),
+        };
+        assert!(inode_size % INODE_ALIGN == 0);
+
+        // read whole inode
+        raw.resize(inode_size, 0);
+        if self.inode_tbl.read_exact(start, &mut raw)? != raw.len() {
+            return Err(FsError::UnexpectedEof);
+        }
+
         Inode::new_from_raw(
-            &ablk[offset as usize..],
+            &raw,
             iid,
+            itp,
             self.backend.clone(),
             self.mode.is_encrypted(),
             self.cache_data,

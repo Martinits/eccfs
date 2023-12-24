@@ -45,18 +45,14 @@ impl Inode {
     pub fn new_from_raw(
         raw: &[u8],
         iid: InodeID,
+        tp: FileType,
         backend: ROCache,
         encrypted: bool,
         cache_data: bool,
     ) -> FsResult<Self> {
-        // for now, inode cannot cross block
-        // first make sure we can read a 2 byte mode
-        let mode: u16 = unsafe {
-            *(raw.as_ptr() as *const u16)
-        };
-        match get_ftype_from_mode(mode) {
+        match tp {
             FileType::Reg => {
-                assert!(size_of::<DInodeReg>() <= raw.len());
+                assert!(size_of::<DInodeReg>() == raw.len());
                 let dinode = unsafe {
                     &*(raw.as_ptr() as *const DInodeReg)
                 };
@@ -82,22 +78,21 @@ impl Inode {
                     },
                 })
             }
-            FileType::Dir=> {
+            FileType::Dir => {
                 assert!(size_of::<DInodeDirBase>() <= raw.len());
                 let dinode_base = unsafe {
                     &*(raw.as_ptr() as *const DInodeDirBase)
                 };
 
-                let dirent_num = dinode_base.base.size as usize;
+                let nr_idx = dinode_base.nr_idx as usize;
 
-                let idx_list = if dirent_num != 0 {
+                let idx_list = if nr_idx != 0 {
                     let idx_start = size_of::<DInodeDirBase>();
-                    let idx_end = idx_start + dirent_num * size_of::<EntryIndex>();
-                    assert!(idx_end <= raw.len());
+                    assert!(idx_start + nr_idx * size_of::<EntryIndex>() == raw.len());
                     Vec::from(unsafe {
                         std::slice::from_raw_parts(
                             raw[idx_start..].as_ptr() as *const EntryIndex,
-                            dirent_num
+                            nr_idx
                         )
                     })
                 } else {
@@ -123,7 +118,7 @@ impl Inode {
                 })
             }
             FileType::Lnk => {
-                assert!(size_of::<DInodeDirBase>() <= raw.len());
+                assert!(size_of::<DInodeLnk>() == raw.len());
                 let dinode = unsafe {
                     &*(raw.as_ptr() as *const DInodeLnk)
                 };
