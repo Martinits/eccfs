@@ -28,7 +28,9 @@ pub struct DInodeBase {
     /// modiied time
     pub mtime: u32,
 
-    /// file size(regular file), dir-entry num(dir), or name length(symbolic link)
+    /// file size(regular file)
+    /// dir-entry num(dir), without . and ..
+    /// name length(symbolic link)
     pub size: u64,
 }
 rw_as_blob!(DInodeBase);
@@ -82,14 +84,15 @@ pub const DE_MAX_INLINE_NAME: usize = 12;
 pub struct DInodeDirBase {
     pub base: DInodeBase,
 
-    /// first block of dir entry list in dir entry table
-    pub data_start: u32,
+    /// first entry position of dir entry list in dir entry table
+    /// 16 bit block offset + 48 bit block pos
+    pub de_list_start: u64,
 
     /// number of entry index
     pub nr_idx: u32,
 
     /// padding
-    pub _padding: u64,
+    pub _padding: u32,
 }
 rw_as_blob!(DInodeDirBase);
 

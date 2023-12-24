@@ -101,7 +101,7 @@ impl ROFS {
     }
 
     fn fetch_inode(&self, iid: InodeID) -> FsResult<Inode> {
-        let (bpos, offset) = iid_split(iid);
+        let (bpos, offset) = pos64_split(iid);
         let ablk = self.inode_tbl.get_blk(bpos)?;
         Inode::new_from_raw(
             &ablk[offset as usize..],
@@ -211,17 +211,23 @@ impl FileSystem for ROFS {
         // which is too large to stick to memory.
         // This only influences SGX deployments, not FUSE,
         // because FUSE leverages kernel's dir entry cache.
-        if let Some((mut pos, len)) = self.get_inode(iid)?.lookup_index(name)? {
+        if let Some((de_list_start, gstart, glen)) = self.get_inode(iid)?.lookup_index(name)? {
+            let hash = half_md4(name.as_encoded_bytes())?;
+
             let step = size_of::<DirEntry>();
+            let (mut pos, mut off) = pos64_add(
+                pos64_split(de_list_start),
+                (gstart * step) as u64
+            );
+
             let mut done = 0;
-            while done < len {
-                let ablk = self.dirent_tbl.get_blk((pos / BLK_SZ) as u64)?;
-                let round = (len - done).min((BLK_SZ - pos % BLK_SZ) / step);
+            while done < glen {
+                let ablk = self.dirent_tbl.get_blk(pos)?;
+                let round = (glen - done).min((BLK_SZ - off as usize) / step);
                 let ents = unsafe {
                     std::slice::from_raw_parts(
-                        ablk[pos%BLK_SZ..].as_ptr() as *const DirEntry, round)
+                        ablk[off as usize..].as_ptr() as *const DirEntry, round)
                 };
-                let hash = half_md4(name.as_encoded_bytes())?;
                 for ent in ents.iter().filter(
                     |ent| ent.hash == hash
                 ) {
@@ -231,20 +237,26 @@ impl FileSystem for ROFS {
                     }
                 }
                 done += round;
-                pos += step * round;
+                (pos, off) = pos64_add((pos, off as u16), (step * round) as u64);
             }
         }
         Ok(None)
     }
 
     fn listdir(&self, iid: InodeID) -> FsResult<Vec<(InodeID, String, FileType)>> {
-        let (start, num) = self.get_inode(iid)?.get_entry_list_info()?;
+        let (de_start, num) = self.get_inode(iid)?.get_entry_list_info()?;
+        let (pos, off) = pos64_split(de_start);
 
         let mut list = vec![DirEntry::default(); num];
-        let to = unsafe { std::slice::from_raw_parts_mut(list.as_mut_ptr() as *mut u8, num) };
-        let read = self.dirent_tbl.read_exact(start as usize * BLK_SZ, to)?;
+        let to = unsafe {
+            std::slice::from_raw_parts_mut(
+                list.as_mut_ptr() as *mut u8,
+                num * size_of::<DirEntry>(),
+            )
+        };
+        let read = self.dirent_tbl.read_exact(pos as usize * BLK_SZ + off as usize, to)?;
 
-        if read != num {
+        if read != num * size_of::<DirEntry>() {
             Err(FsError::InvalidData)
         } else {
             let mut ret = Vec::with_capacity(num);
@@ -258,10 +270,15 @@ impl FileSystem for ROFS {
     }
 }
 
-pub fn iid_split(iid: InodeID) -> (u64, u16) {
-    (iid & 0x0ffffffffffff, (iid >> 48) as u16)
+pub fn pos64_split(pos: u64) -> (u64, u16) {
+    (pos & 0x0ffffffffffff, (pos >> 48) as u16)
 }
 
-pub fn iid_join(pos: u64, off: u16) -> InodeID {
+pub fn pos64_join(pos: u64, off: u16) -> u64 {
     pos | ((off as u64) << 48)
+}
+
+pub fn pos64_add((pos, off): (u64, u16), add: u64) -> (u64, u16) {
+    let newoff = off as u64 + add;
+    (pos + newoff / BLK_SZ as u64, (newoff % BLK_SZ as u64) as u16)
 }

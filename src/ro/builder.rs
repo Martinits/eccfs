@@ -192,7 +192,6 @@ struct ROBuilder {
     itbl: File,
     ptbl: File,
     dtbl: File,
-    dtbl_next_blk: usize,
     data: File,
     next_inode: InodeID,
     root_inode_max_sz: u16,
@@ -229,7 +228,6 @@ impl ROBuilder {
             image: to,
             itbl,
             dtbl,
-            dtbl_next_blk: 0,
             ptbl,
             data,
             next_inode: 0,
@@ -272,7 +270,7 @@ impl ROBuilder {
 
         assert_eq!(inode.len() % INODE_ALIGN, 0);
 
-        let (mut pos, mut off) = iid_split(self.next_inode);
+        let (mut pos, mut off) = pos64_split(self.next_inode);
         if BLK_SZ - off as usize % BLK_SZ > inode.len() {
             // not enough space in current block, move to next
             (pos, off) = self.jump_over_root_inode(pos + 1, 0);
@@ -284,14 +282,12 @@ impl ROBuilder {
             inode,
         )?;
 
-        let ret = iid_join(pos, off);
+        let ret = pos64_join(pos, off);
 
         // set new next_inode
-        off += inode.len() as u16;
-        pos += off as u64 / BLK_SZ as u64;
-        off %= BLK_SZ as u16;
+        (pos, off) = pos64_add((pos, off), inode.len() as u64);
         (pos, off) = self.jump_over_root_inode(pos, off);
-        self.next_inode = iid_join(pos, off);
+        self.next_inode = pos64_join(pos, off);
 
         Ok(ret)
     }
@@ -349,17 +345,17 @@ impl ROBuilder {
         &mut self,
         mytp: FileType,
         de_list_raw: Vec<DirEntryRaw>
-    ) -> FsResult<(u32, u64, u64)> {
-        // seek to next block
-        let next = (self.dtbl_next_blk * BLK_SZ) as u64;
-        if io_try!(self.dtbl.seek(SeekFrom::Start(next))) != next {
-            return Err(FsError::NotSeekable);
-        }
-        let data_start = self.dtbl_next_blk;
+    ) -> FsResult<(u64, u64, u64)> {
+
         let nr_de = de_list_raw.len() + 2;
+        let de_start_raw = get_file_pos(&mut self.dtbl)?;
+        assert!(de_start_raw as usize % size_of::<DirEntry>() == 0);
+        let de_start_pos = de_start_raw / BLK_SZ as u64;
+        let de_start_off = de_start_raw % BLK_SZ as u64;
 
         // write dot and dotdot first
-        let dots = vec![
+        let mut de_list = Vec::with_capacity(nr_de);
+        de_list.push(
             DirEntry {
                 hash: 0,
                 ipos: 0, // pending
@@ -369,7 +365,9 @@ impl ROBuilder {
                         ".".as_bytes(),
                         DE_MAX_INLINE_NAME,
                     )?.try_into().unwrap(),
-            },
+            }
+        );
+        de_list.push(
             DirEntry {
                 hash: 0,
                 ipos: 0, // pending
@@ -379,12 +377,10 @@ impl ROBuilder {
                         "..".as_bytes(),
                         DE_MAX_INLINE_NAME,
                     )?.try_into().unwrap(),
-            },
-        ];
-        write_vec_as_bytes(&mut self.dtbl, &dots)?;
+            }
+        );
 
         // write all dir entries
-        let mut de_list = Vec::with_capacity(de_list_raw.len());
         for de_raw in de_list_raw {
             assert!(de_raw.name.len() <= NAME_MAX as usize);
             de_list.push(DirEntry {
@@ -400,17 +396,12 @@ impl ROBuilder {
         }
         write_vec_as_bytes(&mut self.dtbl, &de_list)?;
 
-        // move to next block
-        self.dtbl_next_blk += (
-            size_of::<DirEntry>() * nr_de
-        ).div_ceil(BLK_SZ);
-
-        // return data_start and dotdot position(in bytes of the whole de_tbl)
+        // return de_start(pos64) and dotdot position(in bytes of the whole de_tbl)
         // and dot position(in bytes of the whole de_tbl) of its own dir entries
         Ok((
-            data_start as u32,
-            (data_start * BLK_SZ + size_of::<DirEntry>() + 8) as u64,
-            (data_start * BLK_SZ + 8) as u64
+            pos64_join(de_start_pos, de_start_off as u16),
+            (de_start_raw as usize * BLK_SZ + size_of::<DirEntry>() + 8) as u64,
+            (de_start_raw as usize * BLK_SZ + 8) as u64
         ))
     }
 
@@ -489,16 +480,16 @@ impl ROBuilder {
 
         // write dir entries
         let inode_base_size = de_raw_list.len() as u64;
-        let (data_start, dotdot, self_dot)
+        let (de_list_start, dotdot, self_dot)
             = self.write_dir_entries(Self::gen_inode_tp(path)?, de_raw_list)?;
 
         // dinode dir base
         let mut dinode_base = Self::gen_inode_base(path)?;
-        // for dir inodes, size represents entry num
+        // for dir inodes, size represents entry num without . and ..
         dinode_base.size = inode_base_size;
         let dir_base = DInodeDirBase {
             base: dinode_base,
-            data_start,
+            de_list_start,
             nr_idx: deidx.len() as u32,
             _padding: 0,
         };

@@ -1,5 +1,5 @@
 use crate::*;
-use crate::vfs::{*, self};
+use crate::vfs::*;
 use super::disk::*;
 use std::time::{SystemTime, Duration};
 use std::mem::size_of;
@@ -21,7 +21,7 @@ enum InodeExt {
         data: ROHashTree,
     },
     Dir {
-        data_start: u32,
+        de_list_start: u64,
         idx_list: Vec<EntryIndex>,
     },
     Lnk(LnkName),
@@ -117,7 +117,7 @@ impl Inode {
                     mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(ibase.mtime as u64),
                     size: ibase.size as usize,
                     ext: InodeExt::Dir {
-                        data_start: dinode_base.data_start,
+                        de_list_start: dinode_base.de_list_start,
                         idx_list,
                     }
                 })
@@ -202,20 +202,22 @@ impl Inode {
         }
     }
 
-    pub fn get_entry_list_info(&self) -> FsResult<(u32, usize)> {
-        if let InodeExt::Dir{data_start, ..} = self.ext {
-            Ok((data_start, self.size))
+    // return de_list_start(pos64), nr entry
+    pub fn get_entry_list_info(&self) -> FsResult<(u64, usize)> {
+        if let InodeExt::Dir{de_list_start, ..} = self.ext {
+            Ok((de_list_start, self.size))
         } else {
             Err(FsError::PermissionDenied)
         }
     }
 
-    pub fn lookup_index(&self, name: &OsStr) -> FsResult<Option<(usize, usize)>> {
-        if let InodeExt::Dir{ref idx_list, ..} = self.ext {
+    // return de_list_start(pos64), group_start(num of entry), group length
+    pub fn lookup_index(&self, name: &OsStr) -> FsResult<Option<(u64, usize, usize)>> {
+        if let InodeExt::Dir{ref idx_list, de_list_start} = self.ext {
             if idx_list.len() == 0 {
                 // no idx, need to search from the first entry
                 // 2 because first two are . and ..
-                return Ok(Some((2, self.size)))
+                return Ok(Some((de_list_start, 2, self.size)))
             }
             let hash = half_md4(name.as_encoded_bytes())?;
             if hash < idx_list[0].hash {
@@ -224,7 +226,7 @@ impl Inode {
             } else if let Some(EntryIndex{position, group_len, ..}) = idx_list.iter().find(
                 |&ent| hash >= ent.hash
             ) {
-                Ok(Some((*position as usize, *group_len as usize)))
+                Ok(Some((de_list_start, *position as usize, *group_len as usize)))
             } else {
                 Err(FsError::IncompatibleMetadata)
             }
