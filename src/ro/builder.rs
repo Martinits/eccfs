@@ -10,6 +10,7 @@ use crate::vfs::*;
 use super::*;
 use std::mem::{size_of_val, size_of};
 use super::disk::*;
+use super::superblock::*;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::cmp::Ordering;
@@ -22,13 +23,11 @@ const MAX_ENTRY_GROUP_LEN: usize = 16;
 
 type ChildInfo = (PathBuf, FileType, InodeID, Option<u64>);
 
-const ROOT_PATHBUF: &str = "/";
-
 /// build a rofs image named [`to`] from all files under [`from`]
 pub fn build_from_dir(
     from: &Path,
     to: &Path,
-    mode: FSMode,
+    encrypted: Option<Key128>,
 ) -> FsResult<()> {
     // check to
     if fs::metadata(to).is_ok() {
@@ -49,12 +48,12 @@ pub fn build_from_dir(
         image,
         to_dir,
         io_try!(fs::read_dir(from)).count(),
-        mode.clone(),
+        encrypted.clone(),
     )?;
-    let mut ht_builder = HTreeBuilder::new(mode.is_encrypted())?;
+    let mut ht_builder = HTreeBuilder::new(encrypted.is_some())?;
 
     // stack holds full paths
-    let mut stack = vec![Some((ROOT_PATHBUF.into(), 0usize))];
+    let mut stack = vec![Some((from.to_path_buf(), 0usize))];
     push_all_children(&mut stack, from, 0)?;
     // de_info maps full path to children, holding child names, not full paths
     let mut de_info = HashMap::new();
@@ -74,7 +73,7 @@ pub fn build_from_dir(
             let fpb = &stack.get(fidx).unwrap().as_ref().unwrap().0;
             if m.is_dir() {
                 let child_info = de_info.remove(&pb).unwrap();
-                let (iid, dotdot) = builder.handle_dir(&pb, child_info)?;
+                let (iid, dotdot) = builder.handle_dir(&pb, child_info, false)?;
                 push_child_info(
                     &mut de_info,
                     fpb,
@@ -110,8 +109,17 @@ pub fn build_from_dir(
     }
     assert_eq!(stack.len(), 1);
 
-    let root_pb: PathBuf = ROOT_PATHBUF.into();
-    builder.finalize(de_info.remove(&root_pb).unwrap())?;
+    // create and write root inode
+    let root_pb: PathBuf = from.to_path_buf();
+    let (root_iid, _) = builder.handle_dir(
+        &root_pb,
+        de_info.remove(&root_pb).unwrap(),
+        true,
+    )?;
+    assert_eq!(root_iid, ROOT_INODE_ID);
+
+    // complete image conversion
+    builder.finalize()?;
 
     // remove temp files
 
@@ -159,11 +167,6 @@ fn write_file_at(f: &mut File, seek: u64, b: &[u8]) -> FsResult<()> {
     if io_try!(f.write_at(b, seek)) != b.len() {
         return Err(FsError::UnexpectedEof);
     }
-    // if io_try!(f.seek(SeekFrom::Start(seek))) != seek {
-    //     return Err(FsError::NotSeekable);
-    // }
-    //
-    // io_try!(f.write_all(b));
     Ok(())
 }
 
@@ -179,13 +182,12 @@ fn get_file_pos(f: &mut File) -> FsResult<u64> {
 struct DirEntryRaw {
     hash: u64,
     ipos: u64,
-    len: u16,
     tp: u16,
     name: OsString,
 }
 
 struct ROBuilder {
-    mode: FSMode,
+    encrypted: Option<Key128>,
     image: File,
     itbl: File,
     ptbl: File,
@@ -194,6 +196,7 @@ struct ROBuilder {
     data: File,
     next_inode: InodeID,
     root_inode_max_sz: u16,
+    files: u64,
 }
 
 impl ROBuilder {
@@ -201,7 +204,7 @@ impl ROBuilder {
         to: File,
         mut to_dir: PathBuf,
         root_dir_nr_entry: usize,
-        mode: FSMode,
+        encrypted: Option<Key128>,
     ) -> FsResult<Self> {
         // open meta temp file and data temp file
         to_dir.push(".inode.eccfs");
@@ -222,7 +225,7 @@ impl ROBuilder {
                             + size_of::<EntryIndex>() * nr_idx) as u16;
 
         Ok(Self {
-            mode,
+            encrypted,
             image: to,
             itbl,
             dtbl,
@@ -231,6 +234,7 @@ impl ROBuilder {
             data,
             next_inode: 0,
             root_inode_max_sz,
+            files: 0,
         })
     }
 
@@ -255,7 +259,17 @@ impl ROBuilder {
         }
     }
 
-    fn write_inode(&mut self, inode: &[u8]) -> FsResult<InodeID> {
+    fn write_inode(&mut self, inode: &[u8], is_root: bool) -> FsResult<InodeID> {
+        if is_root {
+            assert!(inode.len() <= self.root_inode_max_sz as usize);
+            write_file_at(
+                &mut self.itbl,
+                1 * BLK_SZ as u64 + self.root_inode_max_sz as u64,
+                inode,
+            )?;
+            return Ok(ROOT_INODE_ID);
+        }
+
         assert_eq!(inode.len() % INODE_ALIGN, 0);
 
         let (mut pos, mut off) = iid_split(self.next_inode);
@@ -280,14 +294,6 @@ impl ROBuilder {
         self.next_inode = iid_join(pos, off);
 
         Ok(ret)
-    }
-
-    fn write_root_inode(&mut self, rinode: &[u8]) -> FsResult<()> {
-        write_file_at(
-            &mut self.itbl,
-            1 * BLK_SZ as u64 + self.root_inode_max_sz as u64,
-            rinode,
-        )
     }
 
     fn gen_inode_tp(pb: &PathBuf) -> FsResult<FileType> {
@@ -380,7 +386,7 @@ impl ROBuilder {
         // write all dir entries
         let mut de_list = Vec::with_capacity(de_list_raw.len());
         for de_raw in de_list_raw {
-            assert!(de_raw.name.len() <= u16::MAX as usize);
+            assert!(de_raw.name.len() <= NAME_MAX as usize);
             de_list.push(DirEntry {
                 hash: de_raw.hash,
                 ipos: de_raw.ipos,
@@ -412,6 +418,7 @@ impl ROBuilder {
         &mut self,
         path: &PathBuf,
         child_info: Vec<ChildInfo>,
+        is_root: bool,
     ) -> FsResult<(InodeID, u64)> {
 
         let mut dotdot_list = Vec::new();
@@ -425,11 +432,10 @@ impl ROBuilder {
         let mut de_raw_list: Vec<DirEntryRaw> = child_info.into_iter().map(
             |(name, tp, iid, _)| {
                 let name = name.into_os_string();
-                assert!(name.len() < u16::MAX as usize);
+                assert!(name.len() < NAME_MAX as usize);
                 DirEntryRaw {
                     hash: half_md4(name.as_os_str().as_encoded_bytes()).unwrap(),
                     ipos: iid,
-                    len: name.len() as u16,
                     tp: tp.into(),
                     name,
                 }
@@ -510,10 +516,14 @@ impl ROBuilder {
                 )
             }
         );
-        let iid = self.write_inode(dinode_bytes.as_slice())?;
+        let iid = self.write_inode(dinode_bytes.as_slice(), is_root)?;
 
         // write this INodeID as all dir children's '..' and its own '.'
         dotdot_list.push(self_dot);
+        if is_root {
+            // root inode's dotdot is itself
+            dotdot_list.push(dotdot);
+        }
         for dd in dotdot_list {
             write_file_at(
                 &mut self.dtbl,
@@ -528,6 +538,7 @@ impl ROBuilder {
         }
 
         // return this inode's iid and it's byte position of dotdot InodeID
+        // if is_root == true, the second return value is useless
         Ok((iid, dotdot))
     }
 
@@ -546,7 +557,8 @@ impl ROBuilder {
             data_start: data_start / BLK_SZ as u64,
             data_len: nr_blk as u64,
         };
-        let iid = self.write_inode(dinode_reg.as_ref())?;
+        let iid = self.write_inode(dinode_reg.as_ref(), false)?;
+        self.files += 1;
         Ok(iid)
     }
 
@@ -565,20 +577,77 @@ impl ROBuilder {
             )?.try_into().unwrap(),
         };
 
-        let iid = self.write_inode(dinode_sym.as_ref())?;
+        let iid = self.write_inode(dinode_sym.as_ref(), false)?;
         Ok(iid)
     }
 
-    fn finalize(&mut self, root_child_info: Vec<ChildInfo>) -> FsResult<()> {
-        // create and write root inode
+    fn round_file_up_to_blk(f: &mut File) -> FsResult<u64> {
+        let len = io_try!(f.seek(SeekFrom::End(0))).next_multiple_of(BLK_SZ as u64);
+        io_try!(f.set_len(len));
+        Ok(len / BLK_SZ as u64)
+    }
+
+    fn finalize(&mut self) -> FsResult<()> {
         // round all file sizes up to multiple of BLK_SZ
-        // write superblock to image file
+        let itbl_nr_blk = Self::round_file_up_to_blk(&mut self.itbl)?;
+        let dtbl_nr_blk = Self::round_file_up_to_blk(&mut self.dtbl)?;
+        let ptbl_nr_blk = Self::round_file_up_to_blk(&mut self.ptbl)?;
+        let file_sec_len = get_file_pos(&mut self.data)?;
+        assert!(file_sec_len % BLK_SZ as u64 == 0);
+        let file_nr_blk = file_sec_len / BLK_SZ as u64;
+
+        // jumpover superblock in image file
+        io_try!(self.image.set_len(BLK_SZ as u64));
+        if io_try!(self.image.seek(SeekFrom::End(0))) != 0 {
+            return Err(FsError::NotSeekable);
+        }
+
         // filter all meta files through hash tree, append to image file
+        assert_eq!(io_try!(self.itbl.seek(SeekFrom::Start(0))), 0);
+        assert_eq!(io_try!(self.dtbl.seek(SeekFrom::Start(0))), 0);
+        assert_eq!(io_try!(self.ptbl.seek(SeekFrom::Start(0))), 0);
+        let mut ht = HTreeBuilder::new(self.encrypted.is_some())?;
+        let (itbl_nr_blk, itbl_ke) = ht.build_htree_file(
+            &mut self.image, &mut self.itbl, itbl_nr_blk
+        )?;
+        let (dtbl_nr_blk, dtbl_ke) = ht.build_htree_file(
+            &mut self.image, &mut self.dtbl, dtbl_nr_blk
+        )?;
+        let (ptbl_nr_blk, ptbl_ke) = ht.build_htree_file(
+            &mut self.image, &mut self.ptbl, ptbl_nr_blk
+        )?;
+
         // filter all reg files through hash tree, append to image file
+        assert_eq!(io_try!(self.data.seek(SeekFrom::Start(0))), 0);
+        let copied = io_try!(std::io::copy(&mut self.data, &mut self.image));
+        assert_eq!(copied, file_sec_len);
+
+        // write superblock to image file
+        let itbl_nr_blk = itbl_nr_blk as u64;
+        let dtbl_nr_blk = dtbl_nr_blk as u64;
+        let ptbl_nr_blk = ptbl_nr_blk as u64;
+        let dsb = DSuperBlock {
+            magic: ROFS_MAGIC,
+            bsize: BLK_SZ as u64,
+            files: self.files,
+            namemax: NAME_MAX,
+            inode_tbl_key: itbl_ke,
+            dirent_tbl_key: dtbl_ke,
+            path_tbl_key: ptbl_ke,
+            inode_tbl_start: 1,
+            inode_tbl_len: itbl_nr_blk,
+            dirent_tbl_start: 1 + itbl_nr_blk,
+            dirent_tbl_len: dtbl_nr_blk,
+            path_tbl_start: 1 + itbl_nr_blk + dtbl_nr_blk,
+            path_tbl_len: ptbl_nr_blk,
+            file_sec_start: 1 + itbl_nr_blk + dtbl_nr_blk + ptbl_nr_blk,
+            blocks: 1 + itbl_nr_blk + dtbl_nr_blk + ptbl_nr_blk + file_nr_blk,
+            encrypted: self.encrypted.is_some(),
+        };
+        write_file_at(&mut self.image, 0, dsb.as_ref())?;
         Ok(())
     }
 }
-
 
 struct HTreeBuilder {
     kdk: (Key128, u64),
@@ -629,6 +698,17 @@ impl HTreeBuilder {
         let logi_nr_blk = io_try!(fs::symlink_metadata(from)).size().div_ceil(BLK_SZ as u64);
         // open source file
         let mut f = io_try!(OpenOptions::new().read(true).open(from));
+
+        self.build_htree_file(to, &mut f, logi_nr_blk)
+    }
+
+    fn build_htree_file(
+        &mut self,
+        to: &mut File,
+        from: &mut File,
+        from_nr_blk: u64,
+    ) -> FsResult<(usize, KeyEntry)> {
+        let logi_nr_blk = from_nr_blk;
         // get the htree sectio start (in blocks)
         let mut to_start_blk = get_file_pos(to)?;
         assert!(to_start_blk % BLK_SZ as u64 == 0);
@@ -638,15 +718,15 @@ impl HTreeBuilder {
         // map idx_phy_pos to its ke
         let mut idx_ke = HashMap::new();
 
-        for logi_pos in (0..logi_nr_blk).rev() {
+        for logi_pos in (0..from_nr_blk).rev() {
             // read plain data block, padding 0 to integral block
             let mut d = [0u8; BLK_SZ] as Block;
-            let _read = read_file_at(&mut f, logi_pos * BLK_SZ as u64, &mut d)?;
+            let _read = read_file_at(from, logi_pos * BLK_SZ as u64, &mut d)?;
             // process crypto
             let phy_pos = mht::logi2phy(logi_pos);
             let ke = self.crypto_process_blk(&mut d, phy_pos)?;
             // write data block
-            write_file_at(&mut f, to_start_blk + phy_pos, &d)?;
+            write_file_at(to, to_start_blk + phy_pos, &d)?;
 
             // write ke to idx_blk
             let ke_idx = mht::logi2dataidx(logi_pos);
@@ -683,7 +763,7 @@ impl HTreeBuilder {
             // add this idx_blk ke to the hashmap, for use of its father
             assert!(idx_ke.insert(idx_phy_pos, ke).is_none());
             // write idx block
-            write_file_at(&mut f, to_start_blk + idx_phy_pos, &idx_blk)?;
+            write_file_at(to, to_start_blk + idx_phy_pos, &idx_blk)?;
             // switch to a new idx block
             idx_blk = [0u8; BLK_SZ];
         }

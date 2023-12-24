@@ -20,6 +20,7 @@ use crate::crypto::half_md4;
 
 
 pub const ROFS_MAGIC: u64 = 0x00454343524F4653; // ECCROFS
+pub const NAME_MAX: u64 = u16::MAX as u64;
 
 pub struct ROFS {
     mode: FSMode,

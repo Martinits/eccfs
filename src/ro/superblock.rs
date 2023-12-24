@@ -16,6 +16,7 @@ pub struct SuperBlock {
     pub dirent_tbl_len: u64,
     pub path_tbl_start: u64,
     pub path_tbl_len: u64,
+    pub file_sec_start: u64,
     pub encrypted: bool,
     /// File system type
     pub magic: u64,
@@ -23,7 +24,7 @@ pub struct SuperBlock {
     pub bsize: usize,
     /// Total number of blocks on file system in units of `frsize`
     pub blocks: usize,
-    /// Total number of file serial numbers
+    /// Total number of file serial numbers, i.e. nr of actual regular files
     pub files: usize,
     /// Maximum filename length, as for dirent structure, it's 65535 (max of u16)
     pub namemax: usize,
@@ -31,22 +32,23 @@ pub struct SuperBlock {
 
 #[repr(C)]
 #[derive(Clone)]
-struct DSuperBlock {
-    magic: u64,
-    bsize: u64,
-    files: u64,
-    namemax: u64,
-    inode_tbl_key: KeyEntry,
-    dirent_tbl_key: KeyEntry,
-    path_tbl_key: KeyEntry,
-    inode_tbl_start: u64,
-    inode_tbl_len: u64,
-    dirent_tbl_start: u64,
-    dirent_tbl_len: u64,
-    path_tbl_start: u64,
-    path_tbl_len: u64,
-    blocks: u64,
-    encrypted: bool,
+pub struct DSuperBlock {
+    pub magic: u64,
+    pub bsize: u64,
+    pub files: u64,
+    pub namemax: u64,
+    pub inode_tbl_key: KeyEntry,
+    pub dirent_tbl_key: KeyEntry,
+    pub path_tbl_key: KeyEntry,
+    pub inode_tbl_start: u64,
+    pub inode_tbl_len: u64,
+    pub dirent_tbl_start: u64,
+    pub dirent_tbl_len: u64,
+    pub path_tbl_start: u64,
+    pub path_tbl_len: u64,
+    pub file_sec_start: u64,
+    pub blocks: u64,
+    pub encrypted: bool,
 }
 rw_as_blob!(DSuperBlock);
 
@@ -66,6 +68,7 @@ impl Into<SuperBlock> for DSuperBlock {
             dirent_tbl_len,
             path_tbl_start,
             path_tbl_len,
+            file_sec_start,
             blocks,
             encrypted,
         } = self;
@@ -84,6 +87,7 @@ impl Into<SuperBlock> for DSuperBlock {
             dirent_tbl_len,
             path_tbl_start,
             path_tbl_len,
+            file_sec_start,
             blocks: blocks as usize,
             encrypted,
         }
@@ -108,7 +112,7 @@ impl SuperBlock {
 
         // check constants
         if dsb.magic != super::ROFS_MAGIC
-            || dsb.bsize != BLK_SZ as u64 || dsb.namemax != u16::MAX as u64 {
+            || dsb.bsize != BLK_SZ as u64 || dsb.namemax != NAME_MAX {
             return Err(FsError::SuperBlockCheckFailed)
         } else {
             Ok(dsb.clone().into())
