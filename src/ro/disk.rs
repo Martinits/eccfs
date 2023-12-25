@@ -28,12 +28,17 @@ pub struct DInodeBase {
     /// modiied time
     pub mtime: u32,
 
-    /// file size(regular file)
+    /// file size(regular file), if inline, actual size is size.next_multiple_of(INODE_ALIGN)
     /// dir-entry num(dir), without . and ..
     /// name length(symbolic link)
     pub size: u64,
 }
 rw_as_blob!(DInodeBase);
+
+// di_base(32)
+// data 480Bytes
+// = 512Bytes
+pub const DI_REG_INLINE_DATA_MAX: u64 = 480;
 
 #[repr(C)]
 #[derive(Default)]

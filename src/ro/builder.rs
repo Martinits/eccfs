@@ -614,19 +614,39 @@ impl ROBuilder {
     fn handle_reg(&mut self, path: &PathBuf, ht: &mut HTreeBuilder) -> FsResult<InodeID> {
         let dinode_base = Self::gen_inode_base(path)?;
 
-        let data_start = get_file_pos(&mut self.data)?;
-        assert!(data_start % BLK_SZ as u64 == 0);
+        let iid = if dinode_base.size <= DI_REG_INLINE_DATA_MAX {
+            // inline data
+            let inode_ext_sz = (dinode_base.size as usize).next_multiple_of(INODE_ALIGN);
+            let mut dinode_bytes = Vec::with_capacity(
+                size_of::<DInodeBase>() + inode_ext_sz
+            );
+            dinode_bytes.extend_from_slice(dinode_base.as_ref());
 
-        // generate hash tree
-        let (nr_blk, ke) = ht.build_htree(&mut self.data, path)?;
+            // read all bytes from source file
+            let mut f = io_try!(File::open(path));
+            let mut buf = vec![0u8; inode_ext_sz];
+            if io_try!(f.read(&mut buf)) != dinode_base.size as usize {
+                return Err(FsError::UnexpectedEof);
+            }
 
-        let dinode_reg = DInodeReg {
-            base: dinode_base,
-            crypto_blob: ke,
-            data_start: data_start / BLK_SZ as u64,
-            data_len: nr_blk as u64,
+            dinode_bytes.extend(&buf);
+            self.write_inode(&dinode_bytes, false)?
+        } else {
+            let data_start = get_file_pos(&mut self.data)?;
+            assert!(data_start % BLK_SZ as u64 == 0);
+
+            // generate hash tree
+            let (nr_blk, ke) = ht.build_htree(&mut self.data, path)?;
+
+            let dinode_reg = DInodeReg {
+                base: dinode_base,
+                crypto_blob: ke,
+                data_start: data_start / BLK_SZ as u64,
+                data_len: nr_blk as u64,
+            };
+            self.write_inode(dinode_reg.as_ref(), false)?
         };
-        let iid = self.write_inode(dinode_reg.as_ref(), false)?;
+
         self.files += 1;
         Ok(iid)
     }

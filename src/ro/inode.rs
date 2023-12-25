@@ -31,6 +31,9 @@ enum InodeExt {
         data_len: u64,
         data: ROHashTree,
     },
+    RegInline {
+        data: Vec<u8>,
+    },
     Dir {
         de_list_start: u64,
         idx_list: Vec<EntryIndex>,
@@ -66,30 +69,52 @@ impl Inode {
     ) -> FsResult<Self> {
         match tp {
             FileType::Reg => {
-                assert!(size_of::<DInodeReg>() == raw.len());
-                let dinode = unsafe {
-                    &*(raw.as_ptr() as *const DInodeReg)
+                assert!(size_of::<DInodeBase>() <= raw.len());
+                let dinode_base = unsafe {
+                    &*(raw.as_ptr() as *const DInodeBase)
                 };
-                let ibase = &dinode.base;
-                Ok(Self {
-                    iid,
-                    tp: FileType::Reg,
-                    perm: get_perm_from_mode(ibase.mode),
-                    nlinks: ibase.nlinks,
-                    uid: ibase.uid,
-                    gid: ibase.gid,
-                    atime: SystemTime::UNIX_EPOCH + Duration::from_secs(ibase.atime as u64),
-                    ctime: SystemTime::UNIX_EPOCH + Duration::from_secs(ibase.ctime as u64),
-                    mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(ibase.mtime as u64),
-                    size: ibase.size as usize,
-                    ext: InodeExt::Reg {
+
+                let sz = dinode_base.size;
+                let ext = if sz <= DI_REG_INLINE_DATA_MAX {
+                    // inline data
+                    let data_start = size_of::<DInodeBase>();
+                    let inode_ext_sz = (sz as usize).next_multiple_of(INODE_ALIGN);
+                    assert!(data_start + inode_ext_sz == raw.len());
+                    let data = Vec::from(unsafe {
+                        std::slice::from_raw_parts(
+                            raw[data_start..].as_ptr() as *const u8,
+                            sz as usize,
+                        )
+                    });
+                    InodeExt::RegInline {
+                        data,
+                    }
+                } else {
+                    assert!(size_of::<DInodeReg>() == raw.len());
+                    let dinode = unsafe {
+                        &*(raw.as_ptr() as *const DInodeReg)
+                    };
+                    InodeExt::Reg {
                         data_start: dinode.data_start,
                         data_len: dinode.data_len,
                         data: ROHashTree::new(
                             backend, dinode.data_start, dinode.data_len,
                             FSMode::from_key_entry(dinode.crypto_blob, encrypted), cache_data,
                         )
-                    },
+                    }
+                };
+                Ok(Self {
+                    iid,
+                    tp: FileType::Reg,
+                    perm: get_perm_from_mode(dinode_base.mode),
+                    nlinks: dinode_base.nlinks,
+                    uid: dinode_base.uid,
+                    gid: dinode_base.gid,
+                    atime: SystemTime::UNIX_EPOCH + Duration::from_secs(dinode_base.atime as u64),
+                    ctime: SystemTime::UNIX_EPOCH + Duration::from_secs(dinode_base.ctime as u64),
+                    mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(dinode_base.mtime as u64),
+                    size: dinode_base.size as usize,
+                    ext,
                 })
             }
             FileType::Dir => {

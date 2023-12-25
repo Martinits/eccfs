@@ -115,7 +115,15 @@ impl ROFS {
 
         // determine inode size from type
         let inode_size = match itp {
-            FileType::Reg => size_of::<DInodeReg>(),
+            FileType::Reg => {
+                if di_base.size <= DI_REG_INLINE_DATA_MAX {
+                    // inline file data
+                    size_of::<DInodeReg>()
+                        + (di_base.size as usize).next_multiple_of(INODE_ALIGN)
+                } else {
+                    size_of::<DInodeReg>()
+                }
+            },
             FileType::Dir => {
                 if di_base.size <= DE_INLINE_MAX {
                     size_of::<DInodeBase>()
