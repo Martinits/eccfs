@@ -67,7 +67,7 @@ impl ROCache {
 
         let mut server = ROCacheServer::new(backend, capacity, rx);
 
-        let handle = thread::spawn(move || {
+        let _handle = thread::spawn(move || {
             loop {
                 match server.rx.recv() {
                     Ok(req) => server.process(req),

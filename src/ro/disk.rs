@@ -152,11 +152,12 @@ rw_as_blob!(DInodeLnk);
 pub const DI_LNK_MAX_INLINE_NAME: usize = 32;
 
 mod test {
-    use crate::ro::disk::*;
-    use std::fs::OpenOptions;
-    use std::io::prelude::*;
     #[test]
     fn rw_struct() {
+        use crate::ro::disk::*;
+        use std::fs::OpenOptions;
+        use std::io::prelude::*;
+
         let mut a = DInodeReg {
             base: DInodeBase {
                 size: 1,

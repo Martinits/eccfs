@@ -4,7 +4,7 @@ use std::num::NonZeroUsize;
 extern crate lru;
 use std::hash::Hash;
 use std::sync::mpsc::{self, Sender, Receiver};
-use std::thread::{self, JoinHandle};
+use std::thread;
 
 pub struct Lru<K: Hash + Eq + Clone, V>(lru::LruCache<K, (Arc<V>, bool)>);
 
@@ -178,7 +178,7 @@ where
 
         let mut server = ChannelServer::new(capacity, rx);
 
-        let handle = thread::spawn(move || {
+        let _handle = thread::spawn(move || {
             loop {
                 match server.rx.recv() {
                     Ok(req) => server.process(req),

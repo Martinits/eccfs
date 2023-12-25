@@ -215,20 +215,30 @@ impl Inode {
     }
 
     pub fn read_data(&self, mut offset: usize, to: &mut [u8]) -> FsResult<usize> {
-        if let InodeExt::Reg { data, .. } = &self.ext {
-            let total = to.len();
-            let mut done = 0;
-            while done < total {
-                let ablk = data.get_blk(( offset / BLK_SZ ) as u64)?;
-                let round = (total - done).min(BLK_SZ - offset % BLK_SZ);
-                let start = offset % BLK_SZ;
-                to[offset..offset+round].copy_from_slice(&ablk[start..start+round]);
-                done += round;
-                offset += round;
+        match &self.ext {
+            InodeExt::Reg { data, .. } => {
+                let total = to.len();
+                let mut done = 0;
+                while done < total {
+                    let ablk = data.get_blk(( offset / BLK_SZ ) as u64)?;
+                    let round = (total - done).min(BLK_SZ - offset % BLK_SZ);
+                    let start = offset % BLK_SZ;
+                    to[offset..offset+round].copy_from_slice(&ablk[start..start+round]);
+                    done += round;
+                    offset += round;
+                }
+                Ok(done)
             }
-            Ok(done)
-        } else {
-            Err(FsError::PermissionDenied)
+            InodeExt::RegInline { data } => {
+                if offset >= data.len() {
+                    Err(FsError::InvalidInput)
+                } else {
+                    let len = (data.len() - offset).min(to.len());
+                    to[..len].copy_from_slice(&data[offset..offset+len]);
+                    Ok(len)
+                }
+            }
+            _ => Err(FsError::PermissionDenied),
         }
     }
 

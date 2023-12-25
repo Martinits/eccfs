@@ -1,5 +1,5 @@
 use aes_gcm::{
-    aead::{Aead, AeadInPlace, Tag, AeadCore, KeyInit},
+    aead::{AeadInPlace, Tag, KeyInit},
     Aes128Gcm, Nonce, Key
 };
 use sha3::{Digest, Sha3_256};
@@ -133,9 +133,10 @@ pub fn half_md4(buf: &[u8]) -> FsResult<u64> {
 }
 
 mod tests {
-    use sha3::{Digest, Sha3_256};
     #[test]
     fn sha3_256() {
+        use sha3::{Digest, Sha3_256};
+
         let mut hasher = Sha3_256::new();
         let input = "abcdefghijklmnopqrstuvwxyz";
 
@@ -146,12 +147,12 @@ mod tests {
         println!("sha3 on {} results {:02X?}.", input, &result[..]);
     }
 
-    use aes_gcm::{
-        aead::{Aead, AeadCore, KeyInit},
-        Aes128Gcm, Nonce, Key
-    };
     #[test]
     fn aes_gcm_128_simple() {
+        use aes_gcm::{
+            aead::{Aead, KeyInit},
+            Aes128Gcm, Nonce, Key
+        };
 
         let key = Key::<Aes128Gcm>::from_slice(b"1234567890123456");
         let input = b"abc";
@@ -164,27 +165,28 @@ mod tests {
         assert_eq!(&plaintext, input);
     }
 
-    use crate::*;
-    use super::aes_gcm_128_blk_dec;
-    use super::aes_gcm_128_blk_enc;
-    use super::Key128;
-    use super::Nonce96;
     #[test]
     fn aes_gcm_128() {
+        use crate::*;
+        use super::aes_gcm_128_blk_dec;
+        use super::aes_gcm_128_blk_enc;
+        use super::Key128;
+
         let plain: Block = [14; 4096];
         let mut buffer = plain.clone();
         let key: Key128 = [3; 16];
 
         let mac = aes_gcm_128_blk_enc(&mut buffer, &key, 123).unwrap();
 
-        let plain_out = aes_gcm_128_blk_dec(&mut buffer, &key, &mac, 123).unwrap();
+        let _plain_out = aes_gcm_128_blk_dec(&mut buffer, &key, &mac, 123).unwrap();
 
         assert_eq!(plain, buffer);
     }
 
-    use super::half_md4;
     #[test]
     fn test_half_md4() {
+        use super::half_md4;
+
         let buf = "hello!";
 
         let rs = half_md4(buf.as_bytes()).unwrap();

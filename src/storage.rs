@@ -45,6 +45,9 @@ impl ROStorage for FileStorage {
 
 impl RWStorage for FileStorage {
     fn write_blk(&mut self, pos: u64, from: &Block) -> FsResult<()> {
+        if !self.writable {
+            return Err(FsError::PermissionDenied);
+        }
         let position = io_try!(self.handle.seek(SeekFrom::Start(pos * BLK_SZ as u64)));
         if position != pos * BLK_SZ as u64 {
             Err(FsError::NotSeekable)
