@@ -109,3 +109,10 @@ macro_rules! io_try {
         $e.map_err(|e| Into::<FsError>::into(e))?
     };
 }
+
+#[macro_export]
+macro_rules! blk2byte {
+    ($e: expr) => {
+        (BLK_SZ * $e as usize)
+    };
+}

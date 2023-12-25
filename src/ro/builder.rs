@@ -194,9 +194,13 @@ struct ROBuilder {
     encrypted: Option<Key128>,
     image: File,
     itbl: File,
-    ptbl: File,
+    itbl_path: PathBuf,
     dtbl: File,
+    dtbl_path: PathBuf,
+    ptbl: File,
+    ptbl_path: PathBuf,
     data: File,
+    data_path: PathBuf,
     next_inode: InodeID,
     root_inode_max_sz: u16,
     files: u64,
@@ -215,17 +219,33 @@ impl ROBuilder {
         encrypted: Option<Key128>,
     ) -> FsResult<Self> {
         // open meta temp file and data temp file
+        // inode table
         to_dir.push(ITBL_TEMP_FILE);
-        let itbl = io_try!(OpenOptions::new().write(true).create_new(true).open(&to_dir));
+        let itbl_path = to_dir.clone();
+        let itbl = io_try!(OpenOptions::new()
+                            .read(true).write(true).create_new(true)
+                            .open(&to_dir));
         to_dir.pop();
+        // dirent table
         to_dir.push(DTBL_TEMP_FILE);
-        let dtbl = io_try!(OpenOptions::new().write(true).create_new(true).open(&to_dir));
+        let dtbl_path = to_dir.clone();
+        let dtbl = io_try!(OpenOptions::new()
+                            .read(true).write(true).create_new(true)
+                            .open(&to_dir));
         to_dir.pop();
+        // path table
         to_dir.push(PTBL_TEMP_FILE);
-        let ptbl = io_try!(OpenOptions::new().write(true).create_new(true).open(&to_dir));
+        let ptbl_path = to_dir.clone();
+        let ptbl = io_try!(OpenOptions::new()
+                            .read(true).write(true).create_new(true)
+                            .open(&to_dir));
         to_dir.pop();
+        // data
         to_dir.push(DATA_TEMP_FILE);
-        let data = io_try!(OpenOptions::new().write(true).create_new(true).open(&to_dir));
+        let data_path = to_dir.clone();
+        let data = io_try!(OpenOptions::new()
+                            .read(true).write(true).create_new(true)
+                            .open(&to_dir));
 
         // estimate root inode size
         let (nr_idx, _) = Self::estimate_idx(root_dir_nr_entry);
@@ -237,9 +257,13 @@ impl ROBuilder {
             encrypted,
             image: to,
             itbl,
+            itbl_path,
             dtbl,
+            dtbl_path,
             ptbl,
+            ptbl_path,
             data,
+            data_path,
             next_inode: 0,
             root_inode_max_sz,
             files: 0,
@@ -274,7 +298,7 @@ impl ROBuilder {
             assert!(inode.len() <= self.root_inode_max_sz as usize);
             write_file_at(
                 &mut self.itbl,
-                1 * BLK_SZ as u64 + self.root_inode_max_sz as u64,
+                blk2byte!(1) as u64 + self.root_inode_max_sz as u64,
                 inode,
             )?;
             return Ok(ROOT_INODE_ID);
@@ -287,7 +311,7 @@ impl ROBuilder {
 
         write_file_at(
             &mut self.itbl,
-            pos * BLK_SZ as u64 + off as u64,
+            blk2byte!(pos) as u64 + off as u64,
             inode,
         )?;
 
@@ -419,8 +443,8 @@ impl ROBuilder {
         // and dot position(in bytes of the whole de_tbl) of its own dir entries
         Ok((
             pos64_join(de_start_pos, de_start_off as u16),
-            (de_start_raw as usize * BLK_SZ + size_of::<DirEntry>() + 8) as u64,
-            (de_start_raw as usize * BLK_SZ + 8) as u64
+            (blk2byte!(de_start_raw) + size_of::<DirEntry>() + 8) as u64,
+            (blk2byte!(de_start_raw) + 8) as u64
         ))
     }
 
@@ -571,7 +595,7 @@ impl ROBuilder {
             // inline de
             let (pos, off) = pos64_split(iid);
             let di_inline_start =
-                pos * BLK_SZ as u64 + off as u64
+                blk2byte!(pos) as u64 + off as u64
                 + size_of::<DInodeBase>() as u64;
             let dotdot = di_inline_start + size_of::<DirEntry>() as u64 + 8;
             let self_dot = di_inline_start + 8;
@@ -690,26 +714,29 @@ impl ROBuilder {
 
         // jumpover superblock in image file
         io_try!(self.image.set_len(BLK_SZ as u64));
-        if io_try!(self.image.seek(SeekFrom::End(0))) != 0 {
+        if io_try!(self.image.seek(SeekFrom::End(0))) != BLK_SZ as u64 {
             return Err(FsError::NotSeekable);
         }
 
         // filter all meta files through hash tree, append to image file
-        assert_eq!(io_try!(self.itbl.seek(SeekFrom::Start(0))), 0);
-        assert_eq!(io_try!(self.dtbl.seek(SeekFrom::Start(0))), 0);
-        assert_eq!(io_try!(self.ptbl.seek(SeekFrom::Start(0))), 0);
         let mut ht = HTreeBuilder::new(self.encrypted.is_some())?;
+        // inode table
+        assert_eq!(io_try!(self.itbl.seek(SeekFrom::Start(0))), 0);
         let (itbl_nr_blk, itbl_ke) = ht.build_htree_file(
             &mut self.image, &mut self.itbl, itbl_nr_blk
         )?;
+        // dirent table
+        assert_eq!(io_try!(self.dtbl.seek(SeekFrom::Start(0))), 0);
         let (dtbl_nr_blk, dtbl_ke) = ht.build_htree_file(
             &mut self.image, &mut self.dtbl, dtbl_nr_blk
         )?;
+        // path table
+        assert_eq!(io_try!(self.ptbl.seek(SeekFrom::Start(0))), 0);
         let (ptbl_nr_blk, ptbl_ke) = ht.build_htree_file(
             &mut self.image, &mut self.ptbl, ptbl_nr_blk
         )?;
 
-        // filter all reg files through hash tree, append to image file
+        // append data temp file to image file
         assert_eq!(io_try!(self.data.seek(SeekFrom::Start(0))), 0);
         let copied = io_try!(std::io::copy(&mut self.data, &mut self.image));
         assert_eq!(copied, file_sec_len);
@@ -745,10 +772,10 @@ impl ROBuilder {
         drop(self.ptbl);
         drop(self.data);
         // remove temp files
-        io_try!(fs::remove_file(ITBL_TEMP_FILE));
-        io_try!(fs::remove_file(DTBL_TEMP_FILE));
-        io_try!(fs::remove_file(PTBL_TEMP_FILE));
-        io_try!(fs::remove_file(DATA_TEMP_FILE));
+        io_try!(fs::remove_file(self.itbl_path));
+        io_try!(fs::remove_file(self.dtbl_path));
+        io_try!(fs::remove_file(self.ptbl_path));
+        io_try!(fs::remove_file(self.data_path));
 
         Ok(())
     }
@@ -814,10 +841,11 @@ impl HTreeBuilder {
         from_nr_blk: u64,
     ) -> FsResult<(usize, KeyEntry)> {
         let logi_nr_blk = from_nr_blk;
-        // get the htree sectio start (in blocks)
+        // get the htree start (in blocks)
         let mut to_start_blk = get_file_pos(to)?;
         assert!(to_start_blk % BLK_SZ as u64 == 0);
         to_start_blk /= BLK_SZ as u64;
+        let htree_nr_blk = mht::get_phy_nr_blk(logi_nr_blk);
 
         let mut idx_blk = [0u8; BLK_SZ] as Block;
         // map idx_phy_pos to its ke
@@ -826,12 +854,12 @@ impl HTreeBuilder {
         for logi_pos in (0..from_nr_blk).rev() {
             // read plain data block, padding 0 to integral block
             let mut d = [0u8; BLK_SZ] as Block;
-            let _read = read_file_at(from, logi_pos * BLK_SZ as u64, &mut d)?;
+            let _read = read_file_at(from, blk2byte!(logi_pos) as u64, &mut d)?;
             // process crypto
             let phy_pos = mht::logi2phy(logi_pos);
             let ke = self.crypto_process_blk(&mut d, phy_pos)?;
             // write data block
-            write_file_at(to, to_start_blk + phy_pos, &d)?;
+            write_file_at(to, blk2byte!(to_start_blk + phy_pos) as u64, &d)?;
 
             // write ke to idx_blk
             let ke_idx = mht::logi2dataidx(logi_pos);
@@ -868,7 +896,7 @@ impl HTreeBuilder {
             // add this idx_blk ke to the hashmap, for use of its father
             assert!(idx_ke.insert(idx_phy_pos, ke).is_none());
             // write idx block
-            write_file_at(to, to_start_blk + idx_phy_pos, &idx_blk)?;
+            write_file_at(to, blk2byte!(to_start_blk + idx_phy_pos) as u64, &idx_blk)?;
             // switch to a new idx block
             idx_blk = [0u8; BLK_SZ];
         }
@@ -876,15 +904,22 @@ impl HTreeBuilder {
         let root_ke = idx_ke.remove(&HTREE_ROOT_BLK_PHY_POS).unwrap();
         assert!(idx_ke.is_empty());
 
-        let htree_nr_blk = mht::get_phy_nr_blk(logi_nr_blk);
-
         // seek to end of this htree
-        let file_end = (to_start_blk + htree_nr_blk) * BLK_SZ as u64;
-        if io_try!(to.seek(SeekFrom::Start(file_end))) != file_end {
-            return Err(FsError::NotSeekable);
-        }
+        let file_end = blk2byte!(to_start_blk + htree_nr_blk) as u64;
+        assert_eq!(io_try!(to.seek(SeekFrom::End(0))), file_end);
 
         // return size of htree in block, root block keys
         Ok((htree_nr_blk as usize, root_ke))
+    }
+}
+
+mod test {
+    #[test]
+    fn build() {
+        use std::path::Path;
+
+        let from = Path::new("test/fuser");
+        let to = Path::new("test/fuser.roimage");
+        super::build_from_dir(&from, &to, None).unwrap();
     }
 }

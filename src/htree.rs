@@ -16,7 +16,7 @@ pub mod mht {
     pub const DATA_PER_BLK: u64 = ENTRY_PER_BLK * 3 / 4;
 
     pub fn logi2phy(logi: u64) -> u64 {
-        let nr_idx = logi.div_ceil(DATA_PER_BLK);
+        let nr_idx = (logi + 1).div_ceil(DATA_PER_BLK);
         logi + nr_idx
     }
 

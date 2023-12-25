@@ -104,7 +104,7 @@ impl ROFS {
 
         // try read dinode_base to get inode type
         let mut raw = vec![0u8; size_of::<DInodeBase>()];
-        let start = bpos as usize * BLK_SZ + offset as usize;
+        let start = blk2byte!(bpos) + offset as usize;
         if self.inode_tbl.read_exact(start, &mut raw)? != raw.len() {
             return Err(FsError::UnexpectedEof);
         }
@@ -321,7 +321,7 @@ impl FileSystem for ROFS {
                         num * size_of::<DirEntry>(),
                     )
                 };
-                let read = self.dirent_tbl.read_exact(pos as usize * BLK_SZ + off as usize, to)?;
+                let read = self.dirent_tbl.read_exact(blk2byte!(pos) + off as usize, to)?;
 
                 if read != num * size_of::<DirEntry>() {
                     Err(FsError::InvalidData)
