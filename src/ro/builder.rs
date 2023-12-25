@@ -3,7 +3,6 @@ use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 use crate::*;
 use std::fs::{OpenOptions, self, File};
-use log::warn;
 use crate::crypto::*;
 use rand_core::RngCore;
 use crate::vfs::*;
@@ -34,7 +33,7 @@ pub fn build_from_dir(
     from: &Path,
     to: &Path,
     encrypted: Option<Key128>,
-) -> FsResult<()> {
+) -> FsResult<FSMode> {
     // check to
     if fs::metadata(to).is_ok() {
         return Err(FsError::AlreadyExists);
@@ -125,9 +124,9 @@ pub fn build_from_dir(
     assert_eq!(root_iid, ROOT_INODE_ID);
 
     // complete image conversion
-    builder.finalize()?;
+    let ret = builder.finalize()?;
 
-    Ok(())
+    Ok(ret)
 }
 
 fn push_all_children(
@@ -703,7 +702,7 @@ impl ROBuilder {
         Ok(len / BLK_SZ as u64)
     }
 
-    fn finalize(mut self) -> FsResult<()> {
+    fn finalize(mut self) -> FsResult<FSMode> {
         // round all file sizes up to multiple of BLK_SZ
         let itbl_nr_blk = Self::round_file_up_to_blk(&mut self.itbl)?;
         let dtbl_nr_blk = Self::round_file_up_to_blk(&mut self.dtbl)?;
@@ -745,7 +744,12 @@ impl ROBuilder {
         let itbl_nr_blk = itbl_nr_blk as u64;
         let dtbl_nr_blk = dtbl_nr_blk as u64;
         let ptbl_nr_blk = ptbl_nr_blk as u64;
-        let dsb = DSuperBlock {
+
+        let mut sb_blk = [0u8; BLK_SZ];
+        let dsb = unsafe {
+            &mut *(sb_blk.as_mut_ptr() as *mut DSuperBlock)
+        };
+        *dsb = DSuperBlock {
             magic: ROFS_MAGIC,
             bsize: BLK_SZ as u64,
             files: self.files,
@@ -763,7 +767,15 @@ impl ROBuilder {
             blocks: 1 + itbl_nr_blk + dtbl_nr_blk + ptbl_nr_blk + file_nr_blk,
             encrypted: self.encrypted.is_some(),
         };
-        write_file_at(&mut self.image, 0, dsb.as_ref())?;
+
+        let ret = if let Some(key) = self.encrypted {
+            let mac = aes_gcm_128_blk_enc(&mut sb_blk, &key, SUPERBLOCK_POS)?;
+            FSMode::Encrypted(key, mac)
+        } else {
+            let hash = sha3_256_blk(&sb_blk)?;
+            FSMode::IntegrityOnly(hash)
+        };
+        write_file_at(&mut self.image, 0, &sb_blk)?;
 
         // close files
         drop(self.image);
@@ -777,7 +789,7 @@ impl ROBuilder {
         io_try!(fs::remove_file(self.ptbl_path));
         io_try!(fs::remove_file(self.data_path));
 
-        Ok(())
+        Ok(ret)
     }
 }
 
@@ -917,9 +929,35 @@ mod test {
     #[test]
     fn build() {
         use std::path::Path;
+        use crate::*;
+        use std::fs::OpenOptions;
+        use std::io::prelude::*;
 
         let from = Path::new("test/fuser");
         let to = Path::new("test/fuser.roimage");
-        super::build_from_dir(&from, &to, None).unwrap();
+        let mode = super::build_from_dir(&from, &to, None).unwrap();
+        match &mode {
+            FSMode::IntegrityOnly(hash) => {
+                let s = hex::encode_upper(hash);
+                println!("Built in IntegrityOnly Mode:");
+                println!("Hash: {}", s);
+            }
+            FSMode::Encrypted(key, mac) => {
+                println!("Built in Encrypted Mode:");
+                let k = hex::encode_upper(key);
+                let m = hex::encode_upper(mac);
+                println!("Key: {}", k);
+                println!("Mac: {}", m);
+            }
+        }
+        // save mode to file
+        let mut f = OpenOptions::new().write(true).open("test/mode").unwrap();
+        let written = f.write(unsafe {
+            std::slice::from_raw_parts(
+                &mode as *const FSMode as *const u8,
+                std::mem::size_of::<FSMode>(),
+            )
+        }).unwrap();
+        assert_eq!(written, std::mem::size_of::<FSMode>());
     }
 }

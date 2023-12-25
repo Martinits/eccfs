@@ -12,6 +12,7 @@ pub use error::*;
 pub use bcache::DEFAULT_CACHE_CAP;
 use crypto::*;
 use std::mem;
+pub use log::{warn, info, debug};
 
 
 pub const MAX_LOOP_CNT: u64 = 10001;
@@ -21,7 +22,7 @@ pub type Block = [u8; 4096];
 
 pub const ROOT_INODE_ID: u64 = 1;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum FSMode {
     Encrypted(Key128, MAC128),
     IntegrityOnly(Hash256),

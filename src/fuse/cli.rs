@@ -6,6 +6,8 @@ use std::path::Path;
 use eccfs::*;
 use eccfs::vfs::*;
 use std::time::Duration;
+use std::fs::File;
+use std::io::prelude::*;
 
 struct EccFs {
     fs: Box<dyn vfs::FileSystem>,
@@ -400,19 +402,51 @@ impl Filesystem for EccFs {
 }
 
 fn main() -> FsResult<()> {
-    let path = Path::new("test.blob");
+    env_logger::init();
+
+    // read mode from file
+    let mut f = File::open("test/mode").unwrap();
+    let mut b = vec![0u8; std::mem::size_of::<FSMode>()];
+    f.read_exact(&mut b).unwrap();
+    let mode = unsafe {
+        &*(b.as_ptr() as *const FSMode)
+    };
+    match mode {
+        FSMode::IntegrityOnly(hash) => {
+            let s = hex::encode_upper(hash);
+            info!("Run in IntegrityOnly Mode:");
+            info!("Hash: {}", s);
+        }
+        FSMode::Encrypted(key, mac) => {
+            info!("Run in Encrypted Mode:");
+            let k = hex::encode_upper(key);
+            let m = hex::encode_upper(mac);
+            info!("Key: {}", k);
+            info!("Mac: {}", m);
+        }
+    }
+
+    let path = Path::new("test/fuser.roimage");
+    let mount = Path::new("test/mnt");
     let rofs = ro::ROFS::new(
         path,
-        eccfs::FSMode::IntegrityOnly([0u8; 32]),
+        mode.clone(),
         Some(DEFAULT_CACHE_CAP),
         Some(DEFAULT_CACHE_CAP),
         Some(DEFAULT_CACHE_CAP),
     )?;
 
-    fuser::mount2(EccFs {
-        fs: Box::new(rofs),
-    }, path, &vec![]).map_err(
-        |_| FsError::UnknownError
-    )?;
+    fuser::mount2(
+        EccFs {
+            fs: Box::new(rofs),
+        },
+        mount,
+        &vec![
+            MountOption::AllowOther,
+            MountOption::AutoUnmount,
+            MountOption::RO,
+        ]
+    ).unwrap();
+
     Ok(())
 }
