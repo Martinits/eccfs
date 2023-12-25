@@ -127,8 +127,6 @@ pub fn build_from_dir(
     // complete image conversion
     builder.finalize()?;
 
-    // remove temp files
-
     Ok(())
 }
 
@@ -204,6 +202,11 @@ struct ROBuilder {
     files: u64,
 }
 
+const ITBL_TEMP_FILE: &str = ".inode.eccfs";
+const DTBL_TEMP_FILE: &str = ".dirent.eccfs";
+const PTBL_TEMP_FILE: &str = ".path.eccfs";
+const DATA_TEMP_FILE: &str = ".data.eccfs";
+
 impl ROBuilder {
     fn new(
         to: File,
@@ -212,16 +215,16 @@ impl ROBuilder {
         encrypted: Option<Key128>,
     ) -> FsResult<Self> {
         // open meta temp file and data temp file
-        to_dir.push(".inode.eccfs");
+        to_dir.push(ITBL_TEMP_FILE);
         let itbl = io_try!(OpenOptions::new().write(true).create_new(true).open(&to_dir));
         to_dir.pop();
-        to_dir.push(".dirent.eccfs");
+        to_dir.push(DTBL_TEMP_FILE);
         let dtbl = io_try!(OpenOptions::new().write(true).create_new(true).open(&to_dir));
         to_dir.pop();
-        to_dir.push(".path.eccfs");
+        to_dir.push(PTBL_TEMP_FILE);
         let ptbl = io_try!(OpenOptions::new().write(true).create_new(true).open(&to_dir));
         to_dir.pop();
-        to_dir.push(".data.eccfs");
+        to_dir.push(DATA_TEMP_FILE);
         let data = io_try!(OpenOptions::new().write(true).create_new(true).open(&to_dir));
 
         // estimate root inode size
@@ -676,7 +679,7 @@ impl ROBuilder {
         Ok(len / BLK_SZ as u64)
     }
 
-    fn finalize(&mut self) -> FsResult<()> {
+    fn finalize(mut self) -> FsResult<()> {
         // round all file sizes up to multiple of BLK_SZ
         let itbl_nr_blk = Self::round_file_up_to_blk(&mut self.itbl)?;
         let dtbl_nr_blk = Self::round_file_up_to_blk(&mut self.dtbl)?;
@@ -734,6 +737,19 @@ impl ROBuilder {
             encrypted: self.encrypted.is_some(),
         };
         write_file_at(&mut self.image, 0, dsb.as_ref())?;
+
+        // close files
+        drop(self.image);
+        drop(self.itbl);
+        drop(self.dtbl);
+        drop(self.ptbl);
+        drop(self.data);
+        // remove temp files
+        io_try!(fs::remove_file(ITBL_TEMP_FILE));
+        io_try!(fs::remove_file(DTBL_TEMP_FILE));
+        io_try!(fs::remove_file(PTBL_TEMP_FILE));
+        io_try!(fs::remove_file(DATA_TEMP_FILE));
+
         Ok(())
     }
 }
