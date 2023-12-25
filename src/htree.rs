@@ -44,6 +44,9 @@ pub mod mht {
 
     // get idxblk's father's phypos and child_idx in father blk
     pub fn idxphy2father(idxphy: u64) -> (u64, u64) {
+        if idxphy == 0 {
+            return (0, 0)
+        }
         let idx = idxphy / (DATA_PER_BLK + 1);
         let father = (idx - 1) / CHILD_PER_BLK;
         let fatherphy = father * (DATA_PER_BLK + 1);
@@ -145,12 +148,7 @@ impl ROHashTree {
         let mut idxphy = mht::phy2idxphy(data_phy);
         idx_stack.push((mht::logi2dataidx(pos), data_phy));
 
-        let first_cached_idx = if idxphy == 0 {
-            // data is under root idx
-            mutex_lock!(self.backend).get_blk_hint(
-                self.start + idxphy, true, self.root_hint.clone()
-            )?
-        } else {
+        let first_cached_idx = {
             // find backward through the tree to the first cached idx blk
             let mut safe_cnt = 0;
             loop {
@@ -160,6 +158,11 @@ impl ROHashTree {
                     self.start + idxphy, true
                 )? {
                     break ablk;
+                } else if idxphy == 0 {
+                    // root blk is not cached, fetch root block
+                    break mutex_lock!(self.backend).get_blk_hint(
+                        self.start + idxphy, true, self.root_hint.clone()
+                    )?
                 } else {
                     let (father, child_idx) = mht::idxphy2father(idxphy);
                     idx_stack.push((child_idx, idxphy));
