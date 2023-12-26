@@ -136,8 +136,10 @@ impl ROHashTree {
             return Err(FsError::FileTooLarge)
         }
 
+        let mut backend = mutex_lock!(self.backend);
+
         let data_phy = mht::logi2phy(pos);
-        if let Some(ablk) = mutex_lock!(self.backend).get_blk_try(
+        if let Some(ablk) = backend.get_blk_try(
             self.start + data_phy, self.cache_data
         )? {
             return Ok(ablk)
@@ -154,13 +156,13 @@ impl ROHashTree {
             loop {
                 if safe_cnt >= MAX_LOOP_CNT {
                     panic!("Loop exceeds MAX count!");
-                } else if let Some(ablk) = mutex_lock!(self.backend).get_blk_try(
+                } else if let Some(ablk) = backend.get_blk_try(
                     self.start + idxphy, true
                 )? {
                     break ablk;
                 } else if idxphy == 0 {
                     // root blk is not cached, fetch root block
-                    break mutex_lock!(self.backend).get_blk_hint(
+                    break backend.get_blk_hint(
                         self.start + idxphy, true, self.root_hint.clone()
                     )?
                 } else {
@@ -185,7 +187,7 @@ impl ROHashTree {
             } else {
                 CacheMissHint::IntegrityOnly(key_entry)
             };
-            this_idx_ablk = mutex_lock!(self.backend).get_blk_hint(
+            this_idx_ablk = backend.get_blk_hint(
                 self.start + child_phy, true, hint
             )?;
         }
