@@ -137,7 +137,7 @@ impl ROHashTree {
         }
 
         let data_phy = mht::logi2phy(pos);
-        if let Some(ablk) = mutex_lock!(self.backend).get_blk(
+        if let Some(ablk) = mutex_lock!(self.backend).get_blk_try(
             self.start + data_phy, self.cache_data
         )? {
             return Ok(ablk)
@@ -154,7 +154,7 @@ impl ROHashTree {
             loop {
                 if safe_cnt >= MAX_LOOP_CNT {
                     panic!("Loop exceeds MAX count!");
-                } else if let Some(ablk) = mutex_lock!(self.backend).get_blk(
+                } else if let Some(ablk) = mutex_lock!(self.backend).get_blk_try(
                     self.start + idxphy, true
                 )? {
                     break ablk;

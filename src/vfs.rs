@@ -138,12 +138,6 @@ pub trait FileSystem: Sync + Send {
     }
 }
 
-// #[derive(Default, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
-// pub struct Timespec {
-//     pub sec: i64,
-//     pub nsec: i64,
-// }
-
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum FileType {
     Reg,

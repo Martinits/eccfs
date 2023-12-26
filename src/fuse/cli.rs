@@ -431,9 +431,9 @@ fn main() -> FsResult<()> {
     let rofs = ro::ROFS::new(
         path,
         mode.clone(),
-        Some(DEFAULT_CACHE_CAP),
-        Some(DEFAULT_CACHE_CAP),
-        Some(DEFAULT_CACHE_CAP),
+        None,
+        None,
+        None,
     )?;
 
     fuser::mount2(

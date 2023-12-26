@@ -82,7 +82,7 @@ impl ROCache {
         }
     }
 
-    pub fn get_blk(&mut self, pos: u64, cachable: bool) -> FsResult<Option<Arc<Block>>> {
+    pub fn get_blk_try(&mut self, pos: u64, cachable: bool) -> FsResult<Option<Arc<Block>>> {
         self.get_blk_impl(pos, cachable, None)
     }
 
@@ -113,13 +113,6 @@ impl ROCache {
     }
 }
 
-// impl Drop for ROCache {
-//     fn drop(&mut self) {
-//         if let Some(join_handle) = self.server_handle.take() {
-//             join_handle.join();
-//         }
-//     }
-// }
 
 impl ROCacheServer {
     fn new(
@@ -148,7 +141,9 @@ impl ROCacheServer {
                             if let Some(hint) = miss_hint {
                                 self.cache_miss(pos, hint)
                             } else {
-                                Err(FsError::CacheNeedHint)
+                                // if cachable but not hint,
+                                // return None to remind caller to provide hint
+                                Ok(None)
                             }
                         }
                         Err(e) => Err(e),
@@ -158,7 +153,14 @@ impl ROCacheServer {
                         |blk| Some(Arc::new(blk))
                     )
                 } else {
-                    Err(FsError::CacheNeedHint)
+                    // This means block is not cachable and no hint is provided.
+                    // Ideally, caller should always provide hint for a uncachable block,
+                    // and we should return an error like this:
+                    // Err(FsError::CacheNeedHint)
+
+                    // But maybe caller just want to know whether such a block is cached,
+                    // so we handle this gently.
+                    Ok(None)
                 };
                 reply.send(send).unwrap();
             }
