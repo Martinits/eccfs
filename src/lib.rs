@@ -114,6 +114,6 @@ macro_rules! io_try {
 #[macro_export]
 macro_rules! blk2byte {
     ($e: expr) => {
-        (BLK_SZ * $e as usize)
+        (BLK_SZ * $e as usize) as u64
     };
 }

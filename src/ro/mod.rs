@@ -104,7 +104,7 @@ impl ROFS {
 
         // try read dinode_base to get inode type
         let mut raw = vec![0u8; size_of::<DInodeBase>()];
-        let start = blk2byte!(bpos) + offset as usize;
+        let start = pos64_to_byte(bpos, offset) as usize;
         if self.inode_tbl.read_exact(start, &mut raw)? != raw.len() {
             return Err(FsError::UnexpectedEof);
         }
@@ -118,7 +118,7 @@ impl ROFS {
             FileType::Reg => {
                 if di_base.size <= DI_REG_INLINE_DATA_MAX {
                     // inline file data
-                    size_of::<DInodeReg>()
+                    size_of::<DInodeBase>()
                         + (di_base.size as usize).next_multiple_of(INODE_ALIGN)
                 } else {
                     size_of::<DInodeReg>()
@@ -155,6 +155,7 @@ impl ROFS {
             iid,
             itp,
             self.backend.clone(),
+            rwlock_read!(self.sb).file_sec_start,
             self.mode.is_encrypted(),
             self.cache_data,
         )
@@ -279,12 +280,10 @@ impl FileSystem for ROFS {
 
         let hash = half_md4(name.as_encoded_bytes())?;
         match self.get_inode(iid)?.lookup_index(name)? {
-            LookUpInfo::External(de_list_start, gstart, glen) => {
+            LookUpInfo::External(gstart, glen) => {
                 let step = size_of::<DirEntry>();
-                let (mut pos, mut off) = pos64_add(
-                    pos64_split(de_list_start),
-                    (gstart * step) as u64
-                );
+                let mut pos = gstart / BLK_SZ as u64;
+                let mut off = (gstart % BLK_SZ as u64) as u16;
 
                 let mut done = 0;
                 while done < glen {
@@ -298,7 +297,7 @@ impl FileSystem for ROFS {
                         return Ok(Some(iid));
                     }
                     done += round;
-                    (pos, off) = pos64_add((pos, off as u16), (step * round) as u64);
+                    (pos, off) = pos64_add((pos, off), (step * round) as u64);
                 }
                 Ok(None)
             }
@@ -309,11 +308,9 @@ impl FileSystem for ROFS {
         }
     }
 
-    fn listdir(&self, iid: InodeID) -> FsResult<Vec<(InodeID, String, FileType)>> {
-        match self.get_inode(iid)?.get_entry_list_info()? {
-            DirEntryInfo::External(de_start, num) => {
-                let (pos, off) = pos64_split(de_start);
-
+    fn listdir(&self, iid: InodeID, offset: usize) -> FsResult<Vec<(InodeID, String, FileType)>> {
+        match self.get_inode(iid)?.get_entry_list_info(offset)? {
+            Some(DirEntryInfo::External(de_start, num)) => {
                 let mut de_list = vec![DirEntry::default(); num];
                 let to = unsafe {
                     std::slice::from_raw_parts_mut(
@@ -321,7 +318,7 @@ impl FileSystem for ROFS {
                         num * size_of::<DirEntry>(),
                     )
                 };
-                let read = self.dirent_tbl.read_exact(blk2byte!(pos) + off as usize, to)?;
+                let read = self.dirent_tbl.read_exact(de_start as usize, to)?;
 
                 if read != num * size_of::<DirEntry>() {
                     Err(FsError::InvalidData)
@@ -335,7 +332,7 @@ impl FileSystem for ROFS {
                     Ok(ret)
                 }
             }
-            DirEntryInfo::Inline(de_list) => {
+            Some(DirEntryInfo::Inline(de_list)) => {
                 let mut ret = Vec::with_capacity(de_list.len());
                 for de in de_list {
                     let name = self.get_dir_ent_name(de)?;
@@ -343,6 +340,7 @@ impl FileSystem for ROFS {
                 }
                 Ok(ret)
             }
+            None => Ok(Vec::new())
         }
     }
 }
@@ -358,4 +356,8 @@ pub fn pos64_join(pos: u64, off: u16) -> u64 {
 pub fn pos64_add((pos, off): (u64, u16), add: u64) -> (u64, u16) {
     let newoff = off as u64 + add;
     (pos + newoff / BLK_SZ as u64, (newoff % BLK_SZ as u64) as u16)
+}
+
+pub fn pos64_to_byte(pos: u64, off: u16) -> u64 {
+    blk2byte!(pos) + off as u64
 }

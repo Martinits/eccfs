@@ -122,7 +122,11 @@ pub trait FileSystem: Sync + Send {
     }
 
     /// list all entries in inode only if it's a dir
-    fn listdir(&self, _inode: InodeID) -> FsResult<Vec<(InodeID, String, FileType)>> {
+    fn listdir(
+        &self,
+        _inode: InodeID,
+        _offset: usize
+    ) -> FsResult<Vec<(InodeID, String, FileType)>> {
         Err(FsError::Unsupported)
     }
 
@@ -285,51 +289,6 @@ pub enum FallocateMode {
     ZeroRange,
     ZeroRangeKeepSize,
 }
-
-// pub trait Inode: Sync + Send {
-//     fn read_at(&self, offset: usize, buf: &mut [u8]) -> FsResult<usize>;
-//
-//     fn write_at(&self, offset: usize, buf: &[u8]) -> FsResult<usize>;
-//
-//     fn metadata(&self) -> FsResult<Metadata>;
-//
-//     fn set_metadata(&self, metadata: &Metadata) -> FsResult<()>;
-//
-//     fn fallocate(&self, mode: &FallocateMode, offset: usize, len: usize) -> FsResult<()>;
-//
-//     fn sync_all(&self) -> FsResult<()>;
-//
-//     fn sync_data(&self) -> FsResult<()>;
-//
-//     fn create(&self, name: &str, ftype: FileType, mode: u16) -> FsResult<Arc<dyn Inode>>;
-//
-//     fn link(&self, name: &str, other: &Arc<dyn Inode>) -> FsResult<()>;
-//
-//     fn unlink(&self, name: &str) -> FsResult<()>;
-//
-//     /// Move Inode `self/old_name` to `target/new_name`.
-//     /// If `target` equals `self`, do rename.
-//     fn movei(&self, old_name: &str, target: &Arc<dyn Inode>, new_name: &str) -> FsResult<()>;
-//
-//     /// Find the Inode `name` in the directory
-//     fn lookup(&self, name: &str) -> FsResult<Arc<dyn Inode>>;
-//
-//     /// Get the name of directory entry
-//     fn get_entry(&self, id: usize) -> FsResult<String>;
-//
-//     /// Get all directory entries as a Vec
-//     fn list(&self) -> FsResult<Vec<String>> {
-//         let info = self.metadata()?;
-//         if info.ftype != FileType::Dir {
-//             return Err(FsError::NotADirectory);
-//         }
-//         Ok((0..)
-//             .map(|i| self.get_entry(i))
-//             .take_while(|result| result.is_ok())
-//             .filter_map(|result| result.ok())
-//             .collect())
-//     }
-// }
 
 pub fn check_access(
     file_uid: u32,

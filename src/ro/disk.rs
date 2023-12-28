@@ -59,7 +59,7 @@ pub struct DInodeReg {
 rw_as_blob!(DInodeReg);
 
 #[repr(C)]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct EntryIndex {
     /// entry hash
     pub hash: u64,
@@ -73,7 +73,7 @@ pub struct EntryIndex {
 rw_as_blob!(EntryIndex);
 
 #[repr(C)]
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub struct DirEntry {
     pub hash: u64,
     pub ipos: u64,

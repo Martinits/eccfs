@@ -54,6 +54,7 @@ impl Filesystem for EccFs {
             let meta = fuse_try!(self.fs.get_meta(iid), reply);
             reply.entry(&DEFAULT_TTL, &meta.into(), 0);
         } else {
+            debug!("lookup not found");
             reply.error(FsError::NotFound.into());
         }
     }
@@ -276,15 +277,16 @@ impl Filesystem for EccFs {
     ) {
         assert!(offset >= 0);
 
-        let entries = fuse_try!(self.fs.listdir(ino), reply);
+        let entries = fuse_try!(self.fs.listdir(ino, offset as usize), reply);
 
-        for (idx, (iid, name, ft)) in entries.into_iter().skip(offset as usize).enumerate() {
+        for (idx, (iid, name, ft)) in entries.into_iter().enumerate() {
             if reply.add(
                 iid,
                 offset + idx as i64 + 1,
                 ft.into(),
                 OsString::from(name),
             ) {
+                debug!("Buffer full");
                 break;
             }
         }
@@ -320,8 +322,10 @@ impl Filesystem for EccFs {
     fn access(&mut self, req: &Request<'_>, ino: u64, mask: i32, reply: ReplyEmpty) {
         let meta = fuse_try!(self.fs.get_meta(ino), reply);
         if check_access(meta.uid, meta.gid, meta.perm, req.uid(), req.gid(), mask) {
+            debug!("Access Ok");
             reply.ok();
         } else {
+            debug!("Access Denied");
             reply.error(libc::EACCES);
         }
     }
@@ -402,7 +406,9 @@ impl Filesystem for EccFs {
 }
 
 fn main() -> FsResult<()> {
-    env_logger::init();
+    env_logger::builder()
+        .filter_level(log::LevelFilter::Debug)
+        .init();
 
     // read mode from file
     let mut f = File::open("test/mode").unwrap();

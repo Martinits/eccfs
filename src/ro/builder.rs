@@ -20,7 +20,7 @@ use std::os::unix::fs::FileExt;
 
 const MAX_ENTRY_GROUP_LEN: usize = 16;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum DotDotPos {
     InodeTable(u64),
     DirEntryTable(u64),
@@ -59,9 +59,10 @@ pub fn build_from_dir(
 
     // stack holds full paths
     let mut stack = vec![Some((from.to_path_buf(), 0usize))];
-    push_all_children(&mut stack, from, 0)?;
     // de_info maps full path to children, holding child names, not full paths
     let mut de_info = HashMap::new();
+    assert!(de_info.insert(from.to_path_buf(), Vec::new()).is_none());
+    push_all_children(&mut stack, from, 0)?;
 
     // travel file tree in post order
     // we don't use recursion but iteration by a stack
@@ -70,6 +71,7 @@ pub fn build_from_dir(
             let father_idx = stack.len();
             stack.push(Some((pb.clone(), fidx)));
             stack.push(None);
+            assert!(de_info.insert(pb.clone(), Vec::new()).is_none());
             push_all_children(&mut stack, pb.as_path(), father_idx)?;
         } else {
             let (pb, fidx) = stack.pop().unwrap().unwrap();
@@ -147,11 +149,7 @@ fn push_child_info(
     fpb: &PathBuf,
     child_info: ChildInfo,
 ) {
-    if let Some(child) = map.get_mut(fpb) {
-        child.push(child_info);
-    } else {
-        map.insert(fpb.clone(), vec![child_info]);
-    }
+    map.get_mut(fpb).unwrap().push(child_info);
 }
 
 fn write_vec_as_bytes<T>(f: &mut File, v: &Vec<T>) -> FsResult<()> {
@@ -263,7 +261,8 @@ impl ROBuilder {
             ptbl_path,
             data,
             data_path,
-            next_inode: 0,
+            // inode 0 means null inode, we should jump over it
+            next_inode: pos64_join(0, INODE_ALIGN as u16),
             root_inode_max_sz,
             files: 0,
         })
@@ -273,12 +272,15 @@ impl ROBuilder {
     fn estimate_idx(nr_de: usize) -> (usize, usize) {
         let mut nr_idx = nr_de.div_ceil(MAX_ENTRY_GROUP_LEN);
         // if only 1 idx is needed, we don't need any index
-        if nr_idx == 0 {
-            return (0, 0);
-        } else if nr_idx == 1 {
+        if nr_idx == 1 {
             nr_idx = 0;
         }
-        (nr_idx, nr_de / nr_idx)
+
+        if nr_idx == 0 {
+            (0, 0)
+        } else {
+            (nr_idx, nr_de.div_ceil(nr_idx))
+        }
     }
 
     fn jump_over_root_inode(&self, pos: u64, off: u16, sz: usize) -> (u64, u16) {
@@ -297,7 +299,7 @@ impl ROBuilder {
             assert!(inode.len() <= self.root_inode_max_sz as usize);
             write_file_at(
                 &mut self.itbl,
-                blk2byte!(1) as u64 + self.root_inode_max_sz as u64,
+                blk2byte!(1),
                 inode,
             )?;
             return Ok(ROOT_INODE_ID);
@@ -310,7 +312,7 @@ impl ROBuilder {
 
         write_file_at(
             &mut self.itbl,
-            blk2byte!(pos) as u64 + off as u64,
+            pos64_to_byte(pos, off),
             inode,
         )?;
 
@@ -442,8 +444,8 @@ impl ROBuilder {
         // and dot position(in bytes of the whole de_tbl) of its own dir entries
         Ok((
             pos64_join(de_start_pos, de_start_off as u16),
-            (blk2byte!(de_start_raw) + size_of::<DirEntry>() + 8) as u64,
-            (blk2byte!(de_start_raw) + 8) as u64
+            de_start_raw + size_of::<DirEntry>() as u64 + 8,
+            de_start_raw + 8
         ))
     }
 
@@ -594,7 +596,7 @@ impl ROBuilder {
             // inline de
             let (pos, off) = pos64_split(iid);
             let di_inline_start =
-                blk2byte!(pos) as u64 + off as u64
+                pos64_to_byte(pos, off)
                 + size_of::<DInodeBase>() as u64;
             let dotdot = di_inline_start + size_of::<DirEntry>() as u64 + 8;
             let self_dot = di_inline_start + 8;
@@ -604,7 +606,7 @@ impl ROBuilder {
                 // root inode's dotdot is itself
                 dotdot_list.push(DotDotPos::InodeTable(dotdot));
             }
-            (iid, DotDotPos::DirEntryTable(dotdot))
+            (iid, DotDotPos::InodeTable(dotdot))
         };
 
         let iid_bytes = unsafe {
@@ -863,15 +865,15 @@ impl HTreeBuilder {
         // map idx_phy_pos to its ke
         let mut idx_ke = HashMap::new();
 
-        for logi_pos in (0..from_nr_blk).rev() {
+        for logi_pos in (0..logi_nr_blk).rev() {
             // read plain data block, padding 0 to integral block
             let mut d = [0u8; BLK_SZ] as Block;
-            let _read = read_file_at(from, blk2byte!(logi_pos) as u64, &mut d)?;
+            let _read = read_file_at(from, blk2byte!(logi_pos), &mut d)?;
             // process crypto
             let phy_pos = mht::logi2phy(logi_pos);
             let ke = self.crypto_process_blk(&mut d, phy_pos)?;
             // write data block
-            write_file_at(to, blk2byte!(to_start_blk + phy_pos) as u64, &d)?;
+            write_file_at(to, blk2byte!(to_start_blk + phy_pos), &d)?;
 
             // write ke to idx_blk
             let ke_idx = mht::logi2dataidx(logi_pos);
@@ -908,7 +910,7 @@ impl HTreeBuilder {
             // add this idx_blk ke to the hashmap, for use of its father
             assert!(idx_ke.insert(idx_phy_pos, ke).is_none());
             // write idx block
-            write_file_at(to, blk2byte!(to_start_blk + idx_phy_pos) as u64, &idx_blk)?;
+            write_file_at(to, blk2byte!(to_start_blk + idx_phy_pos), &idx_blk)?;
             // switch to a new idx block
             idx_blk = [0u8; BLK_SZ];
         }
@@ -917,7 +919,7 @@ impl HTreeBuilder {
         assert!(idx_ke.is_empty());
 
         // seek to end of this htree
-        let file_end = blk2byte!(to_start_blk + htree_nr_blk) as u64;
+        let file_end = blk2byte!(to_start_blk + htree_nr_blk);
         assert_eq!(io_try!(to.seek(SeekFrom::End(0))), file_end);
 
         // return size of htree in block, root block keys
@@ -932,6 +934,10 @@ mod test {
         use crate::*;
         use std::fs::OpenOptions;
         use std::io::prelude::*;
+
+        env_logger::builder()
+            .filter_level(log::LevelFilter::Debug)
+            .init();
 
         let from = Path::new("test/fuser");
         let to = Path::new("test/fuser.roimage");

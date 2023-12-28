@@ -55,7 +55,7 @@ pub mod mht {
     }
 
     pub fn get_first_idx_child_phy(idxphy: u64) -> u64 {
-        idxphy * CHILD_PER_BLK + 1
+        (idxphy * CHILD_PER_BLK + 1) * (DATA_PER_BLK + 1)
     }
 
     pub fn get_phy_nr_blk(logi_nr_blk: u64) -> u64 {
@@ -164,7 +164,7 @@ impl ROHashTree {
                     // root blk is not cached, fetch root block
                     break backend.get_blk_hint(
                         self.start + idxphy, true, self.root_hint.clone()
-                    )?
+                    )?;
                 } else {
                     let (father, child_idx) = mht::idxphy2father(idxphy);
                     idx_stack.push((child_idx, idxphy));
@@ -178,7 +178,15 @@ impl ROHashTree {
         let mut this_idx_ablk = first_cached_idx;
         while !idx_stack.is_empty() {
             let (child_idx, child_phy) = idx_stack.pop().unwrap();
-            let key_entry = mht::get_key_entry(&this_idx_ablk, mht::Index(child_idx));
+            let key_entry = mht::get_key_entry(
+                &this_idx_ablk,
+                // if this is the last index, it's an data block
+                if idx_stack.is_empty() {
+                    mht::Data(child_idx)
+                } else {
+                    mht::Index(child_idx)
+                }
+            );
             let hint = if self.encrypted {
                 let (key, mac): (Key128, MAC128) = unsafe {
                     mem::transmute(key_entry)
@@ -202,7 +210,7 @@ impl ROHashTree {
             let ablk = self.get_blk(( offset / BLK_SZ ) as u64)?;
             let round = (total - done).min(BLK_SZ - offset % BLK_SZ);
             let start = offset % BLK_SZ;
-            to[offset..offset+round].copy_from_slice(&ablk[start..start+round]);
+            to[done..done+round].copy_from_slice(&ablk[start..start+round]);
             done += round;
             offset += round;
         }

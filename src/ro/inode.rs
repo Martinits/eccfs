@@ -7,16 +7,17 @@ use crate::htree::*;
 use crate::bcache::*;
 use std::ffi::OsStr;
 use crate::crypto::half_md4;
+use super::*;
 
 pub enum DirEntryInfo<'a> {
-    Inline(&'a Vec<DirEntry>),
-    External(u64, usize),
+    Inline(&'a [DirEntry]),
+    External(u64, usize), // u64 is byte offset in dtbl, not pos64
 }
 
 pub enum LookUpInfo<'a> {
     NonExistent,
     Inline(&'a Vec<DirEntry>),
-    External(u64, usize, usize),
+    External(u64, usize), // u64 is byte offset in dtbl, not pos64
 }
 
 #[derive(Clone)]
@@ -35,7 +36,7 @@ enum InodeExt {
         data: Vec<u8>,
     },
     Dir {
-        de_list_start: u64,
+        de_list_start: u64, // is byte offset, not pos64
         idx_list: Vec<EntryIndex>,
     },
     DirInline {
@@ -54,7 +55,7 @@ pub struct Inode {
     atime: SystemTime,
     ctime: SystemTime,
     mtime: SystemTime,
-    size: usize,
+    size: usize, // with . and ..
     ext: InodeExt,
 }
 
@@ -64,9 +65,11 @@ impl Inode {
         iid: InodeID,
         tp: FileType,
         backend: ROCache,
+        file_sec_start: u64,
         encrypted: bool,
         cache_data: bool,
     ) -> FsResult<Self> {
+
         match tp {
             FileType::Reg => {
                 assert!(size_of::<DInodeBase>() <= raw.len());
@@ -79,7 +82,7 @@ impl Inode {
                     // inline data
                     let data_start = size_of::<DInodeBase>();
                     let inode_ext_sz = (sz as usize).next_multiple_of(INODE_ALIGN);
-                    assert!(data_start + inode_ext_sz == raw.len());
+                    assert_eq!(data_start + inode_ext_sz, raw.len());
                     let data = Vec::from(unsafe {
                         std::slice::from_raw_parts(
                             raw[data_start..].as_ptr() as *const u8,
@@ -95,10 +98,10 @@ impl Inode {
                         &*(raw.as_ptr() as *const DInodeReg)
                     };
                     InodeExt::Reg {
-                        data_start: dinode.data_start,
+                        data_start: file_sec_start + dinode.data_start,
                         data_len: dinode.data_len,
                         data: ROHashTree::new(
-                            backend, dinode.data_start, dinode.data_len,
+                            backend, file_sec_start + dinode.data_start, dinode.data_len,
                             FSMode::from_key_entry(dinode.crypto_blob, encrypted), cache_data,
                         )
                     }
@@ -156,8 +159,10 @@ impl Inode {
                     } else {
                         vec![]
                     };
+                    let (pos, off) = pos64_split(di_dir_base.de_list_start);
+                    assert_eq!(off as usize % INODE_ALIGN, 0);
                     InodeExt::Dir {
-                        de_list_start: di_dir_base.de_list_start,
+                        de_list_start: pos64_to_byte(pos, off),
                         idx_list,
                     }
                 };
@@ -172,7 +177,7 @@ impl Inode {
                     atime: SystemTime::UNIX_EPOCH + Duration::from_secs(dinode_base.atime as u64),
                     ctime: SystemTime::UNIX_EPOCH + Duration::from_secs(dinode_base.ctime as u64),
                     mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(dinode_base.mtime as u64),
-                    size: dinode_base.size as usize,
+                    size: dinode_base.size as usize + 2,
                     ext,
                 })
             }
@@ -214,20 +219,11 @@ impl Inode {
         }
     }
 
-    pub fn read_data(&self, mut offset: usize, to: &mut [u8]) -> FsResult<usize> {
+    pub fn read_data(&self, offset: usize, to: &mut [u8]) -> FsResult<usize> {
         match &self.ext {
             InodeExt::Reg { data, .. } => {
-                let total = to.len();
-                let mut done = 0;
-                while done < total {
-                    let ablk = data.get_blk(( offset / BLK_SZ ) as u64)?;
-                    let round = (total - done).min(BLK_SZ - offset % BLK_SZ);
-                    let start = offset % BLK_SZ;
-                    to[offset..offset+round].copy_from_slice(&ablk[start..start+round]);
-                    done += round;
-                    offset += round;
-                }
-                Ok(done)
+                let read = data.read_exact(offset, to)?;
+                Ok(read)
             }
             InodeExt::RegInline { data } => {
                 if offset >= data.len() {
@@ -275,14 +271,29 @@ impl Inode {
     }
 
     // return de_list_start(pos64), nr entry
-    pub fn get_entry_list_info<'a>(&'a self) -> FsResult<DirEntryInfo<'a>> {
-        match &self.ext {
-            InodeExt::Dir{de_list_start, ..} => {
-                Ok(DirEntryInfo::External(*de_list_start, self.size))
-            },
-            InodeExt::DirInline { de_list } => Ok(DirEntryInfo::Inline(de_list)),
-            _ => Err(FsError::PermissionDenied),
+    pub fn get_entry_list_info<'a>(
+        &'a self,
+        offset: usize
+    ) -> FsResult<Option<DirEntryInfo<'a>>> {
+        if offset >= self.size {
+            return Ok(None);
         }
+
+        let ret = match &self.ext {
+            InodeExt::Dir{de_list_start, ..} => {
+                DirEntryInfo::External(
+                    *de_list_start + (size_of::<DirEntry>() * offset) as u64,
+                    self.size - offset
+                )
+            },
+            InodeExt::DirInline { de_list } => {
+                assert!(offset < de_list.len());
+                DirEntryInfo::Inline(&de_list[offset..])
+            },
+            _ => return Err(FsError::PermissionDenied),
+        };
+
+        Ok(Some(ret))
     }
 
     // return de_list_start(pos64), group_start(num of entry), group length
@@ -292,24 +303,24 @@ impl Inode {
                 if idx_list.len() == 0 {
                     // no idx, need to search from the first entry
                     // 2 because first two are . and ..
-                    return Ok(LookUpInfo::External(*de_list_start, 2, self.size))
+                    return Ok(LookUpInfo::External(
+                        *de_list_start +  2 * size_of::<DirEntry>() as u64,
+                        self.size
+                    ));
                 }
                 let hash = half_md4(name.as_encoded_bytes())?;
-                if hash < idx_list[0].hash {
-                    // hash is smaller than smallest(first) idx, so it doesn't exist
-                    Ok(LookUpInfo::NonExistent)
-                } else if let Some(EntryIndex {
+                if let Some(EntryIndex {
                     position, group_len, ..
-                }) = idx_list.iter().find(
+                }) = idx_list.iter().rev().find(
                     |&ent| hash >= ent.hash
                 ) {
                     Ok(LookUpInfo::External(
-                        *de_list_start,
-                        *position as usize,
+                        *de_list_start + *position as u64 * size_of::<DirEntry>() as u64,
                         *group_len as usize
                     ))
                 } else {
-                    Err(FsError::IncompatibleMetadata)
+                    // hash is smaller than smallest(first) idx, so it doesn't exist
+                    Ok(LookUpInfo::NonExistent)
                 }
             },
             InodeExt::DirInline { de_list } => Ok(LookUpInfo::Inline(de_list)),
