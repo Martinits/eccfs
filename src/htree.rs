@@ -28,16 +28,6 @@ pub mod mht {
         child_phy + DATA_PER_BLK + 1
     }
 
-    // pub fn logi2level(logi: u64) -> FsResult<u64> {
-    //
-    // }
-
-    // // level starts at 0
-    // pub fn phy2level(phy: u64) -> u64 {
-    //     let idx1 = phy / (ENTRY_PER_BLK + 1) + 1;
-    //     idx1.ilog128() as u64
-    // }
-
     pub fn phy2idxphy(phy: u64) -> u64 {
         phy - phy % (DATA_PER_BLK + 1)
     }
@@ -55,7 +45,13 @@ pub mod mht {
     }
 
     pub fn get_first_idx_child_phy(idxphy: u64) -> u64 {
-        (idxphy * CHILD_PER_BLK + 1) * (DATA_PER_BLK + 1)
+        let idxnum = idxphy2number(idxphy);
+        (idxnum * CHILD_PER_BLK + 1) * (DATA_PER_BLK + 1)
+    }
+
+    pub fn idxphy2number(idxphy: u64) -> u64 {
+        assert_eq!(idxphy % (DATA_PER_BLK + 1), 0);
+        idxphy / (DATA_PER_BLK + 1)
     }
 
     pub fn get_phy_nr_blk(logi_nr_blk: u64) -> u64 {

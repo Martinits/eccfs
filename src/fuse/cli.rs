@@ -432,10 +432,15 @@ fn main() -> FsResult<()> {
         }
     }
 
-    let path = Path::new("test/fuser.roimage");
+    let args: Vec<String> = std::env::args().collect();
+    assert!(args.len() >= 2);
+    let target = args[1].clone();
+    debug!("Mounting {}", target);
+
+    let path = format!("test/{}.roimage", target);
     let mount = Path::new("test/mnt");
     let rofs = ro::ROFS::new(
-        path,
+        Path::new(&path),
         mode.clone(),
         None,
         None,

@@ -245,9 +245,15 @@ impl ROBuilder {
                             .open(&to_dir));
 
         // estimate root inode size
-        let (nr_idx, _) = Self::estimate_idx(root_dir_nr_entry);
-        let root_inode_max_sz: u16 = (size_of::<DInodeDirBaseNoInline>()
-                            + size_of::<EntryIndex>() * nr_idx) as u16;
+        let root_inode_max_sz = if root_dir_nr_entry as u64 <= DE_INLINE_MAX {
+            // inline de
+            (size_of::<DInodeBase>()
+                + size_of::<DirEntry>() * (root_dir_nr_entry + 2)) as u16
+        } else {
+            let (nr_idx, _) = Self::estimate_idx(root_dir_nr_entry);
+            (size_of::<DInodeDirBaseNoInline>()
+                + size_of::<EntryIndex>() * nr_idx) as u16
+        };
         assert_eq!(root_inode_max_sz as usize % INODE_ALIGN, 0);
 
         Ok(Self {
@@ -722,32 +728,50 @@ impl ROBuilder {
         // filter all meta files through hash tree, append to image file
         let mut ht = HTreeBuilder::new(self.encrypted.is_some())?;
         // inode table
-        assert_eq!(io_try!(self.itbl.seek(SeekFrom::Start(0))), 0);
-        let (itbl_nr_blk, itbl_ke) = ht.build_htree_file(
-            &mut self.image, &mut self.itbl, itbl_nr_blk
-        )?;
+        debug!("Building itbl htree size {} blocks", itbl_nr_blk);
+        let (itbl_htree_nr_blk, itbl_ke) = if itbl_nr_blk == 0 {
+            (0, [0u8; size_of::<KeyEntry>()])
+        } else {
+            assert_eq!(io_try!(self.itbl.seek(SeekFrom::Start(0))), 0);
+            ht.build_htree_file(
+                &mut self.image, &mut self.itbl, itbl_nr_blk
+            )?
+        };
         // dirent table
-        assert_eq!(io_try!(self.dtbl.seek(SeekFrom::Start(0))), 0);
-        let (dtbl_nr_blk, dtbl_ke) = ht.build_htree_file(
-            &mut self.image, &mut self.dtbl, dtbl_nr_blk
-        )?;
+        debug!("Building dtbl htree size {} blocks", dtbl_nr_blk);
+        let (dtbl_htree_nr_blk, dtbl_ke) = if dtbl_nr_blk == 0 {
+            (0, [0u8; size_of::<KeyEntry>()])
+        } else {
+            assert_eq!(io_try!(self.dtbl.seek(SeekFrom::Start(0))), 0);
+            ht.build_htree_file(
+                &mut self.image, &mut self.dtbl, dtbl_nr_blk
+            )?
+        };
         // path table
-        assert_eq!(io_try!(self.ptbl.seek(SeekFrom::Start(0))), 0);
-        let (ptbl_nr_blk, ptbl_ke) = ht.build_htree_file(
-            &mut self.image, &mut self.ptbl, ptbl_nr_blk
-        )?;
+        debug!("Building ptbl htree size {} blocks", ptbl_nr_blk);
+        let (ptbl_htree_nr_blk, ptbl_ke) = if ptbl_nr_blk == 0 {
+            (0, [0u8; size_of::<KeyEntry>()])
+        } else {
+            assert_eq!(io_try!(self.ptbl.seek(SeekFrom::Start(0))), 0);
+            ht.build_htree_file(
+                &mut self.image, &mut self.ptbl, ptbl_nr_blk
+            )?
+        };
 
         // append data temp file to image file
-        assert_eq!(io_try!(self.data.seek(SeekFrom::Start(0))), 0);
-        let copied = io_try!(std::io::copy(&mut self.data, &mut self.image));
-        assert_eq!(copied, file_sec_len);
+        if file_nr_blk != 0 {
+            assert_eq!(io_try!(self.data.seek(SeekFrom::Start(0))), 0);
+            let copied = io_try!(std::io::copy(&mut self.data, &mut self.image));
+            assert_eq!(copied, file_sec_len);
+        }
 
         // write superblock to image file
-        let itbl_nr_blk = itbl_nr_blk as u64;
-        let dtbl_nr_blk = dtbl_nr_blk as u64;
-        let ptbl_nr_blk = ptbl_nr_blk as u64;
+        let itbl_htree_nr_blk = itbl_htree_nr_blk as u64;
+        let dtbl_htree_nr_blk = dtbl_htree_nr_blk as u64;
+        let ptbl_htree_nr_blk = ptbl_htree_nr_blk as u64;
 
         let mut sb_blk = [0u8; BLK_SZ];
+        assert!(size_of::<DSuperBlock>() <= BLK_SZ);
         let dsb = unsafe {
             &mut *(sb_blk.as_mut_ptr() as *mut DSuperBlock)
         };
@@ -760,13 +784,14 @@ impl ROBuilder {
             dirent_tbl_key: dtbl_ke,
             path_tbl_key: ptbl_ke,
             inode_tbl_start: 1,
-            inode_tbl_len: itbl_nr_blk,
-            dirent_tbl_start: 1 + itbl_nr_blk,
-            dirent_tbl_len: dtbl_nr_blk,
-            path_tbl_start: 1 + itbl_nr_blk + dtbl_nr_blk,
-            path_tbl_len: ptbl_nr_blk,
-            file_sec_start: 1 + itbl_nr_blk + dtbl_nr_blk + ptbl_nr_blk,
-            blocks: 1 + itbl_nr_blk + dtbl_nr_blk + ptbl_nr_blk + file_nr_blk,
+            inode_tbl_len: itbl_htree_nr_blk,
+            dirent_tbl_start: 1 + itbl_htree_nr_blk,
+            dirent_tbl_len: dtbl_htree_nr_blk,
+            path_tbl_start: 1 + itbl_htree_nr_blk + dtbl_htree_nr_blk,
+            path_tbl_len: ptbl_htree_nr_blk,
+            file_sec_start: 1 + itbl_htree_nr_blk + dtbl_htree_nr_blk + ptbl_htree_nr_blk,
+            file_sec_len: file_nr_blk,
+            blocks: 1 + itbl_htree_nr_blk + dtbl_htree_nr_blk + ptbl_htree_nr_blk + file_nr_blk,
             encrypted: self.encrypted.is_some(),
         };
 
@@ -855,6 +880,8 @@ impl HTreeBuilder {
         from_nr_blk: u64,
     ) -> FsResult<(usize, KeyEntry)> {
         let logi_nr_blk = from_nr_blk;
+        assert!(logi_nr_blk > 0);
+
         // get the htree start (in blocks)
         let mut to_start_blk = get_file_pos(to)?;
         assert!(to_start_blk % BLK_SZ as u64 == 0);
@@ -916,6 +943,16 @@ impl HTreeBuilder {
         }
 
         let root_ke = idx_ke.remove(&HTREE_ROOT_BLK_PHY_POS).unwrap();
+        // if idx_ke.len() != 0 {
+        //     debug!("idx_ke keys:");
+        //     let mut l: Vec<_> = idx_ke.keys().map(
+        //         |k| {
+        //             (*k, mht::idxphy2number(*k))
+        //         }
+        //     ).collect();
+        //     l.sort();
+        //     debug!("{l:?}");
+        // }
         assert!(idx_ke.is_empty());
 
         // seek to end of this htree
@@ -933,15 +970,26 @@ mod test {
         use std::path::Path;
         use crate::*;
         use std::fs::OpenOptions;
+        use std::fs;
+        use std::env;
         use std::io::prelude::*;
 
         env_logger::builder()
             .filter_level(log::LevelFilter::Debug)
             .init();
 
-        let from = Path::new("test/fuser");
-        let to = Path::new("test/fuser.roimage");
-        let mode = super::build_from_dir(&from, &to, None).unwrap();
+        let args: Vec<String> = env::args().collect();
+        assert!(args.len() >= 4);
+        let target = args[3].clone();
+        debug!("Building {}", target);
+
+        let from = format!("test/{}", &target);
+        let to = format!("test/{}.roimage", &target);
+        let mode = super::build_from_dir(
+            Path::new(&from),
+            Path::new(&to),
+            None,
+        ).unwrap();
         match &mode {
             FSMode::IntegrityOnly(hash) => {
                 let s = hex::encode_upper(hash);
@@ -957,7 +1005,8 @@ mod test {
             }
         }
         // save mode to file
-        let mut f = OpenOptions::new().write(true).open("test/mode").unwrap();
+        let _ = fs::remove_file("test/mode");
+        let mut f = OpenOptions::new().write(true).create_new(true).open("test/mode").unwrap();
         let written = f.write(unsafe {
             std::slice::from_raw_parts(
                 &mode as *const FSMode as *const u8,

@@ -28,8 +28,8 @@ pub struct ROFS {
     backend: ROCache,
     sb: RwLock<SuperBlock>,
     inode_tbl: ROHashTree,
-    dirent_tbl: ROHashTree,
-    path_tbl: ROHashTree,
+    dirent_tbl: Option<ROHashTree>,
+    path_tbl: Option<ROHashTree>,
     icac: Option<Mutex<ChannelLru<InodeID, Inode>>>,
     de_cac: Option<Mutex<ChannelLru<String, InodeID>>>,
 }
@@ -55,6 +55,7 @@ impl ROFS {
         );
 
         // get hash trees
+        assert!(sb.inode_tbl_len != 0);
         let inode_tbl = ROHashTree::new(
             cac.clone(),
             sb.inode_tbl_start,
@@ -62,20 +63,28 @@ impl ROFS {
             FSMode::from_key_entry(sb.inode_tbl_key, mode.is_encrypted()),
             cache_data.is_some(),
         );
-        let dirent_tbl = ROHashTree::new(
-            cac.clone(),
-            sb.dirent_tbl_start,
-            sb.dirent_tbl_len,
-            FSMode::from_key_entry(sb.dirent_tbl_key, mode.is_encrypted()),
-            cache_data.is_some(),
-        );
-        let path_tbl = ROHashTree::new(
-            cac.clone(),
-            sb.path_tbl_start,
-            sb.path_tbl_len,
-            FSMode::from_key_entry(sb.path_tbl_key, mode.is_encrypted()),
-            cache_data.is_some(),
-        );
+        let dirent_tbl = if sb.dirent_tbl_len != 0 {
+            Some(ROHashTree::new(
+                cac.clone(),
+                sb.dirent_tbl_start,
+                sb.dirent_tbl_len,
+                FSMode::from_key_entry(sb.dirent_tbl_key, mode.is_encrypted()),
+                cache_data.is_some(),
+            ))
+        } else {
+            None
+        };
+        let path_tbl = if sb.path_tbl_len != 0 {
+            Some(ROHashTree::new(
+                cac.clone(),
+                sb.path_tbl_start,
+                sb.path_tbl_len,
+                FSMode::from_key_entry(sb.path_tbl_key, mode.is_encrypted()),
+                cache_data.is_some(),
+            ))
+        } else {
+            None
+        };
 
         Ok(ROFS {
             mode,
@@ -156,6 +165,7 @@ impl ROFS {
             itp,
             self.backend.clone(),
             rwlock_read!(self.sb).file_sec_start,
+            rwlock_read!(self.sb).file_sec_len,
             self.mode.is_encrypted(),
             self.cache_data,
         )
@@ -185,7 +195,8 @@ impl ROFS {
             let pos = u64::from_le_bytes(name[..8].try_into().unwrap());
             let mut buf = vec![0u8; *len as usize];
 
-            let read = self.path_tbl.read_exact(pos as usize, buf.as_mut_slice())?;
+            let read = self.path_tbl.as_ref().unwrap()
+                .read_exact(pos as usize, buf.as_mut_slice())?;
             if read != *len as usize {
                 return Err(FsError::InvalidData)
             }
@@ -250,7 +261,8 @@ impl FileSystem for ROFS {
             LnkName::Short(s) => Ok(s),
             LnkName::Long(pos, len) => {
                 let mut buf = vec![0u8; len];
-                let read = self.path_tbl.read_exact(pos as usize, buf.as_mut_slice())?;
+                let read = self.path_tbl.as_ref().unwrap()
+                            .read_exact(pos as usize, buf.as_mut_slice())?;
                 if read != len {
                     Err(FsError::IncompatibleMetadata)
                 } else {
@@ -287,7 +299,7 @@ impl FileSystem for ROFS {
 
                 let mut done = 0;
                 while done < glen {
-                    let ablk = self.dirent_tbl.get_blk(pos)?;
+                    let ablk = self.dirent_tbl.as_ref().unwrap().get_blk(pos)?;
                     let round = (glen - done).min((BLK_SZ - off as usize) / step);
                     let de_list = unsafe {
                         std::slice::from_raw_parts(
@@ -318,7 +330,8 @@ impl FileSystem for ROFS {
                         num * size_of::<DirEntry>(),
                     )
                 };
-                let read = self.dirent_tbl.read_exact(de_start as usize, to)?;
+                let read = self.dirent_tbl.as_ref().unwrap()
+                            .read_exact(de_start as usize, to)?;
 
                 if read != num * size_of::<DirEntry>() {
                     Err(FsError::InvalidData)

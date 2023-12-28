@@ -17,6 +17,7 @@ pub struct SuperBlock {
     pub path_tbl_start: u64,
     pub path_tbl_len: u64,
     pub file_sec_start: u64,
+    pub file_sec_len: u64,
     pub encrypted: bool,
     /// File system type
     pub magic: u64,
@@ -47,6 +48,7 @@ pub struct DSuperBlock {
     pub path_tbl_start: u64,
     pub path_tbl_len: u64,
     pub file_sec_start: u64,
+    pub file_sec_len: u64,
     pub blocks: u64,
     pub encrypted: bool,
 }
@@ -69,6 +71,7 @@ impl Into<SuperBlock> for DSuperBlock {
             path_tbl_start,
             path_tbl_len,
             file_sec_start,
+            file_sec_len,
             blocks,
             encrypted,
         } = self;
@@ -88,6 +91,7 @@ impl Into<SuperBlock> for DSuperBlock {
             path_tbl_start,
             path_tbl_len,
             file_sec_start,
+            file_sec_len,
             blocks: blocks as usize,
             encrypted,
         }

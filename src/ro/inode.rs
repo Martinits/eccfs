@@ -66,6 +66,7 @@ impl Inode {
         tp: FileType,
         backend: ROCache,
         file_sec_start: u64,
+        file_sec_len: u64,
         encrypted: bool,
         cache_data: bool,
     ) -> FsResult<Self> {
@@ -93,10 +94,12 @@ impl Inode {
                         data,
                     }
                 } else {
+                    assert!(file_sec_len != 0);
                     assert!(size_of::<DInodeReg>() == raw.len());
                     let dinode = unsafe {
                         &*(raw.as_ptr() as *const DInodeReg)
                     };
+                    assert!(dinode.data_start + dinode.data_len <= file_sec_len);
                     InodeExt::Reg {
                         data_start: file_sec_start + dinode.data_start,
                         data_len: dinode.data_len,
