@@ -442,9 +442,9 @@ fn main() -> FsResult<()> {
     let rofs = ro::ROFS::new(
         Path::new(&path),
         mode.clone(),
-        None,
-        None,
-        None,
+        128,
+        64,
+        0,
     )?;
 
     fuser::mount2(

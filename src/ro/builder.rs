@@ -973,6 +973,7 @@ mod test {
         use std::fs;
         use std::env;
         use std::io::prelude::*;
+        use rand_core::RngCore;
 
         env_logger::builder()
             .filter_level(log::LevelFilter::Debug)
@@ -985,10 +986,15 @@ mod test {
 
         let from = format!("test/{}", &target);
         let to = format!("test/{}.roimage", &target);
+
+        let mut k = Some([0u8; 16]);
+        rand::thread_rng().fill_bytes(k.as_mut().unwrap());
+        // let k = None;
+
         let mode = super::build_from_dir(
             Path::new(&from),
             Path::new(&to),
-            None,
+            k,
         ).unwrap();
         match &mode {
             FSMode::IntegrityOnly(hash) => {
@@ -997,6 +1003,7 @@ mod test {
                 println!("Hash: {}", s);
             }
             FSMode::Encrypted(key, mac) => {
+                assert_eq!(k.unwrap(), *key);
                 println!("Built in Encrypted Mode:");
                 let k = hex::encode_upper(key);
                 let m = hex::encode_upper(mac);

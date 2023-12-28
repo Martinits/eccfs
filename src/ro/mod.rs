@@ -38,9 +38,9 @@ impl ROFS {
     pub fn new(
         path: &Path,
         mode: FSMode,
-        cache_data: Option<usize>,
-        cache_inode: Option<usize>,
-        cache_de: Option<usize>,
+        cache_data: usize,
+        cache_inode: usize,
+        cache_de: usize,
     ) -> FsResult<Self> {
         let mut storage = FileStorage::new(path, false)?;
 
@@ -51,7 +51,11 @@ impl ROFS {
         // start cache channel server
         let cac = ROCache::new(
             Box::new(storage),
-            cache_data.unwrap_or(DEFAULT_CACHE_CAP)
+            if cache_data == 0 {
+                DEFAULT_CACHE_CAP
+            } else {
+                cache_data
+            }
         );
 
         // get hash trees
@@ -61,7 +65,7 @@ impl ROFS {
             sb.inode_tbl_start,
             sb.inode_tbl_len,
             FSMode::from_key_entry(sb.inode_tbl_key, mode.is_encrypted()),
-            cache_data.is_some(),
+            cache_data != 0,
         );
         let dirent_tbl = if sb.dirent_tbl_len != 0 {
             Some(ROHashTree::new(
@@ -69,7 +73,7 @@ impl ROFS {
                 sb.dirent_tbl_start,
                 sb.dirent_tbl_len,
                 FSMode::from_key_entry(sb.dirent_tbl_key, mode.is_encrypted()),
-                cache_data.is_some(),
+                cache_data != 0,
             ))
         } else {
             None
@@ -80,7 +84,7 @@ impl ROFS {
                 sb.path_tbl_start,
                 sb.path_tbl_len,
                 FSMode::from_key_entry(sb.path_tbl_key, mode.is_encrypted()),
-                cache_data.is_some(),
+                cache_data != 0,
             ))
         } else {
             None
@@ -90,17 +94,17 @@ impl ROFS {
             mode,
             sb: RwLock::new(sb),
             backend: cac.clone(),
-            cache_data: cache_data.is_some(),
+            cache_data: cache_data != 0,
             inode_tbl,
             dirent_tbl,
             path_tbl,
-            icac: if let Some(cap) = cache_inode {
-                Some(Mutex::new(ChannelLru::new(cap)))
+            icac: if cache_inode != 0 {
+                Some(Mutex::new(ChannelLru::new(cache_inode)))
             } else {
                 None
             },
-            de_cac: if let Some(cap) = cache_de {
-                Some(Mutex::new(ChannelLru::new(cap)))
+            de_cac: if cache_de != 0 {
+                Some(Mutex::new(ChannelLru::new(cache_de)))
             } else {
                 None
             },
