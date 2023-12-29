@@ -2,7 +2,6 @@ use std::sync::{Arc, Mutex, RwLock};
 use crate::bcache::*;
 use crate::*;
 use crate::crypto::*;
-use std::mem;
 use crate::storage::RWStorage;
 use std::collections::HashMap;
 
@@ -12,7 +11,6 @@ pub mod mht {
     use crate::*;
     use crate::crypto::*;
     use std::io::Write;
-    use std::ops::Deref;
 
     pub const ENTRY_PER_BLK: u64 = BLK_SZ as u64 / KEY_ENTRY_SZ as u64;
     pub const CHILD_PER_BLK: u64 = ENTRY_PER_BLK * 1 / 4;
@@ -27,12 +25,12 @@ pub mod mht {
         logi % DATA_PER_BLK
     }
 
-    pub fn next_sibling_phy(child_phy: u64) -> u64 {
-        child_phy + DATA_PER_BLK + 1
-    }
-
     pub fn phy2idxphy(phy: u64) -> u64 {
         phy - phy % (DATA_PER_BLK + 1)
+    }
+
+    pub fn phy2dataidx(phy: u64) -> u64 {
+        phy % (DATA_PER_BLK + 1)
     }
 
     // get idxblk's father's phypos and child_idx in father blk
@@ -50,6 +48,18 @@ pub mod mht {
     pub fn get_first_idx_child_phy(idxphy: u64) -> u64 {
         let idxnum = idxphy2number(idxphy);
         (idxnum * CHILD_PER_BLK + 1) * (DATA_PER_BLK + 1)
+    }
+
+    pub fn next_idx_sibling_phy(child_phy: u64) -> u64 {
+        child_phy + DATA_PER_BLK + 1
+    }
+
+    pub fn get_first_data_child_phy(idxphy: u64) -> u64 {
+        idxphy + 1
+    }
+
+    pub fn next_data_sibling_phy(child_phy: u64) -> u64 {
+        child_phy + 1
     }
 
     pub fn idxphy2number(idxphy: u64) -> u64 {
@@ -71,7 +81,7 @@ pub mod mht {
     }
     pub use EntryType::*;
 
-    pub fn get_key_entry(blk: &dyn Deref<Target = Block>, tp: EntryType) -> KeyEntry {
+    pub fn get_ke(blk: &Block, tp: EntryType) -> KeyEntry {
         let pos = match tp {
             Index(idx) => idx,
             Data(idx) => CHILD_PER_BLK + idx,
@@ -82,7 +92,9 @@ pub mod mht {
         ret
     }
 
-    pub fn set_key_entry(blk: &mut Block, tp: EntryType, ke: &KeyEntry) -> FsResult<()> {
+    pub fn set_ke(
+        blk: &mut Block, tp: EntryType, ke: &KeyEntry
+    ) -> FsResult<()> {
         let pos = match tp {
             Index(idx) => {
                 assert!(idx < CHILD_PER_BLK);
@@ -182,7 +194,7 @@ impl ROHashTree {
         let mut this_idx_ablk = first_cached_idx;
         while !idx_stack.is_empty() {
             let (child_idx, child_phy) = idx_stack.pop().unwrap();
-            let ke = mht::get_key_entry(
+            let ke = mht::get_ke(
                 &this_idx_ablk,
                 // if this is the last index, it's an data block
                 if idx_stack.is_empty() {
@@ -222,6 +234,7 @@ impl ROHashTree {
     }
 }
 
+// data block is forced to be cached due to write back issues
 // need to lock this whole struct
 pub struct RWHashTree {
     // in rw, every htree has its own cache
@@ -229,7 +242,6 @@ pub struct RWHashTree {
     backend: Box<dyn RWStorage>,
     length: u64, // in blocks
     encrypted: bool,
-    cache_data: bool,
     root_mode: FSMode,
     ke_buf: HashMap<u64, KeyEntry>,
     key_gen: KeyGen,
@@ -241,7 +253,6 @@ impl RWHashTree {
         backend: Box<dyn RWStorage>,
         length: u64,
         root_mode: FSMode,
-        cache_data: bool,
     ) -> Self {
         let encrypted = root_mode.is_encrypted();
 
@@ -250,7 +261,6 @@ impl RWHashTree {
             backend,
             length,
             encrypted,
-            cache_data,
             root_mode,
             ke_buf: HashMap::new(),
             key_gen: KeyGen::new(),
@@ -264,10 +274,11 @@ impl RWHashTree {
         }
 
         let data_phy = mht::logi2phy(pos);
-        if self.cache_data {
-            if let Some(apay) = self.cache.get_blk_try(data_phy)? {
-                return Ok(Some(apay))
+        if let Some(apay) = self.cache.get_blk_try(data_phy)? {
+            if write {
+                self.cache.mark_dirty(data_phy)?;
             }
+            return Ok(Some(apay))
         }
 
         // data blk not cached
@@ -282,10 +293,11 @@ impl RWHashTree {
                 if safe_cnt >= MAX_LOOP_CNT {
                     panic!("Loop exceeds MAX count!");
                 } else if let Some(apay) = self.cache.get_blk_try(idxphy)? {
-                    break apay;
+                    break Some(apay);
                 } else if idxphy == 0 {
                     // root blk is not cached
-                    break self.cache_miss(idxphy, Some(self.root_mode.clone()))?
+                    break None;
+                    // break self.cache_miss(idxphy, Some(self.root_mode.clone()))?
                 } else {
                     let (father, child_idx) = mht::idxphy2father(idxphy);
                     idx_stack.push((child_idx, idxphy));
@@ -295,20 +307,24 @@ impl RWHashTree {
             }
         };
 
-        // down the tree, use child_idx to get next idx blk, then final data blk
-        let mut this_idx_apay = first_cached_idx;
-        while !idx_stack.is_empty() {
+        // find first not cached block
+        let (first_no_cache_idxphy, mode) = if let Some(apay) = first_cached_idx {
             let (child_idx, child_phy) = idx_stack.pop().unwrap();
-            let ke = mht::get_key_entry(
-                &rwlock_read!(this_idx_apay),
-                // &rwlock_read!(this_idx_apay),
-                // if this is the last index, it's an data block
-                if idx_stack.is_empty() {
-                    mht::Data(child_idx)
-                } else {
-                    mht::Index(child_idx)
-                }
-            );
+            // try get ke from ke_buf
+            let ke = if let Some(ke) = self.ke_buf.remove(&pos) {
+                ke
+            } else {
+                let lock = rwlock_read!(apay);
+                mht::get_ke(
+                    &lock,
+                    // if this is the last index, it's an data block
+                    if idx_stack.is_empty() {
+                        mht::Data(child_idx)
+                    } else {
+                        mht::Index(child_idx)
+                    }
+                )
+            };
             let mode = if ke_is_zero(&ke) {
                 // new block
                 assert!(child_phy >= self.length);
@@ -317,12 +333,49 @@ impl RWHashTree {
             } else {
                 Some(FSMode::from_key_entry(ke, self.encrypted))
             };
-            this_idx_apay = self.cache_miss(child_phy, mode)?;
+            (child_phy, mode)
+        } else {
+            // root is not cached
+            (HTREE_ROOT_BLK_PHY_POS, Some(self.root_mode.clone()))
+        };
+
+        // down the tree, use child_idx to get next idx blk, then final data blk
+        let (mut cur_phy, mut cur_mode) = (first_no_cache_idxphy, mode);
+        while !idx_stack.is_empty() {
+            let cur_apay = self.cache_miss(cur_phy, cur_mode)?;
+            let (child_idx, child_phy) = idx_stack.pop().unwrap();
+            // try get ke from ke_buf
+            let ke = if let Some(ke) = self.ke_buf.remove(&pos) {
+                ke
+            } else {
+                let lock = rwlock_read!(cur_apay);
+                mht::get_ke(
+                    &lock,
+                    // if this is the last index, it's an data block
+                    if idx_stack.is_empty() {
+                        mht::Data(child_idx)
+                    } else {
+                        mht::Index(child_idx)
+                    }
+                )
+            };
+            cur_mode = if ke_is_zero(&ke) {
+                // new block
+                assert!(child_phy >= self.length);
+                assert!(write);
+                None
+            } else {
+                Some(FSMode::from_key_entry(ke, self.encrypted))
+            };
+            cur_phy = child_phy;
         }
-        let data_ablk = this_idx_apay;
+        let data_apay = self.cache_miss(cur_phy, cur_mode)?;
+        if write {
+            self.cache.mark_dirty(cur_phy)?;
+        }
 
         self.length = self.length.max(pos + 1);
-        Ok(Some(data_ablk))
+        Ok(Some(data_apay))
     }
 
     // mode == None means to create new block
@@ -330,16 +383,13 @@ impl RWHashTree {
         &mut self, pos: u64, mode: Option<FSMode>
     ) -> FsResult<Arc<RWPayLoad>> {
         let blk = if let Some(mode) = mode {
-            self.backend_read(pos, mode)?
+            let mut blk = self.backend_read(pos, mode)?;
+            self.possible_ke_wb(pos, &mut blk)?;
+            blk
         } else {
             // create
             [0u8; BLK_SZ]
         };
-
-        if !self.cache_data && !mht::is_idx(pos) {
-            // not cachable
-            return Ok(Arc::new(RwLock::new(blk)));
-        }
 
         let (apay, wb) = self.cache.insert_and_get(pos, blk)?;
         if let Some((pos, blk)) = wb {
@@ -349,15 +399,35 @@ impl RWHashTree {
         Ok(apay)
     }
 
-    fn write_back(&mut self, pos: u64, blk: Block) -> FsResult<()> {
+    fn write_back(&mut self, pos: u64, mut blk: Block) -> FsResult<()> {
+        self.possible_ke_wb(pos, &mut blk)?;
+
         let mode = if self.encrypted {
             // generate new aes key on every write_back
             let key = self.key_gen.gen_key(pos)?;
             self.backend_write(pos, blk, Some(key))?
         } else {
             self.backend_write(pos, blk, None)?
+        }.into_key_entry();
+
+        // ke changes, try to write back into father
+        let (father, child_idx) = if mht::is_idx(pos) {
+            let (f, idx) = mht::idxphy2father(pos);
+            (f, mht::Index(idx))
+        } else {
+            (mht::phy2idxphy(pos), mht::Data(mht::phy2dataidx(pos)))
         };
-        self.ke_buf.insert(pos, mode.into_key_entry());
+        if let Some(apay) = self.cache.get_blk_try(father)? {
+            let mut lock = rwlock_write!(apay);
+            mht::set_ke(
+                &mut lock,
+                child_idx,
+                &mode,
+            )?;
+            self.cache.mark_dirty(father)?;
+        } else {
+            self.ke_buf.insert(pos, mode);
+        }
         Ok(())
     }
 
@@ -430,8 +500,47 @@ impl RWHashTree {
     // flush all blocks including root
     pub fn flush(&mut self) -> FsResult<()> {
         for (k, v) in self.cache.flush()?.into_iter() {
-            self.backend.write_blk(k, &v)?;
+            self.write_back(k, v)?;
         }
+
+        self.flush_ke_buf()
+    }
+
+    fn flush_ke_buf(&mut self) -> FsResult<()> {
+        Ok(())
+    }
+
+    fn possible_ke_wb(&mut self, pos: u64, blk: &mut Block) -> FsResult<()> {
+        if !mht::is_idx(pos) {
+            return Ok(());
+        }
+
+        // idx ke
+        let mut child_phy = mht::get_first_idx_child_phy(pos);
+        for i in 0..mht::CHILD_PER_BLK {
+            if let Some(ke) = self.ke_buf.remove(&child_phy) {
+                mht::set_ke(
+                    blk,
+                    mht::Index(i),
+                    &ke,
+                )?;
+            }
+            child_phy = mht::next_idx_sibling_phy(child_phy);
+        }
+
+        // data ke
+        let mut child_phy = mht::get_first_data_child_phy(pos);
+        for i in 0..mht::DATA_PER_BLK {
+            if let Some(ke) = self.ke_buf.remove(&child_phy) {
+                mht::set_ke(
+                    blk,
+                    mht::Index(i),
+                    &ke,
+                )?;
+            }
+            child_phy = mht::next_data_sibling_phy(child_phy);
+        }
+
         Ok(())
     }
 }

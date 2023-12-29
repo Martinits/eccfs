@@ -897,9 +897,9 @@ impl HTreeBuilder {
 
             // write ke to idx_blk
             let ke_idx = mht::logi2dataidx(logi_pos);
-            mht::set_key_entry(
+            mht::set_ke(
                 &mut idx_blk,
-                mht::EntryType::Data(ke_idx),
+                mht::Data(ke_idx),
                 &ke,
             )?;
 
@@ -915,15 +915,15 @@ impl HTreeBuilder {
             let mut child_phy = mht::get_first_idx_child_phy(idx_phy_pos);
             for i in 0..mht::CHILD_PER_BLK {
                 if let Some(ke) = idx_ke.remove(&child_phy) {
-                    mht::set_key_entry(
+                    mht::set_ke(
                         &mut idx_blk,
-                        mht::EntryType::Index(i),
+                        mht::Index(i),
                         &ke,
                     )?;
                 } else {
                     break;
                 }
-                child_phy = mht::next_sibling_phy(child_phy);
+                child_phy = mht::next_idx_sibling_phy(child_phy);
             }
             // process crypto
             let ke = self.crypto_process_blk(&mut idx_blk, idx_phy_pos)?;

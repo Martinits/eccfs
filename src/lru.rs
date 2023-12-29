@@ -22,10 +22,8 @@ impl<K: Hash + Eq + Clone, V> Lru<K, V> {
     pub fn mark_dirty(&mut self, key: &K) -> FsResult<()> {
         if let Some(v) = self.0.get_mut(key) {
             v.1 = true;
-            Ok(())
-        } else {
-            Err(FsError::NotFound)
         }
+        Ok(())
     }
 
     // just use the argument `val`, no need to get again

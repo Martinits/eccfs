@@ -219,6 +219,9 @@ enum RWCacheReq {
         blk: Block,
         reply: Sender<FsResult<(Arc<RWPayLoad>, Option<(u64, Block)>)>>,
     },
+    MarkDirty {
+        pos: u64,
+    },
     Flush {
         reply: Sender<FsResult<Vec<(u64, Block)>>>,
     }
@@ -232,7 +235,7 @@ impl RWCache {
 
         let mut server = RWCacheServer::new(capacity, rx);
 
-        let handle = thread::spawn(move || {
+        let _handle = thread::spawn(move || {
             loop {
                 match server.rx.recv() {
                     Ok(req) => server.process(req),
@@ -274,6 +277,13 @@ impl RWCache {
         Ok(ret)
     }
 
+    pub fn mark_dirty(&mut self, pos: u64) -> FsResult<()> {
+        self.tx_to_server.send(RWCacheReq::MarkDirty {
+            pos,
+        }).map_err(|_| FsError::ChannelSendError)?;
+        Ok(())
+    }
+
     pub fn flush(&mut self) -> FsResult<Vec<(u64, Block)>> {
         let (tx, rx) = mpsc::channel();
         self.tx_to_server.send(RWCacheReq::Flush {
@@ -312,6 +322,9 @@ impl RWCacheServer {
                     ))
                 );
                 reply.send(send).unwrap();
+            }
+            RWCacheReq::MarkDirty { pos } => {
+                self.lru.mark_dirty(&pos).unwrap();
             }
             RWCacheReq::Flush { reply } => {
                 let send = match self.lru.flush_wb() {
