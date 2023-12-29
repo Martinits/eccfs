@@ -12,6 +12,10 @@ pub type MAC128 = [u8; 16];
 pub type Hash256 = [u8; 32];
 pub type KeyEntry = [u8; 32];
 
+pub fn ke_is_zero(ke: &KeyEntry) -> bool {
+    *ke == [0u8; 32]
+}
+
 pub const KEY_ENTRY_SZ: usize = 32;
 
 pub fn sha3_256_blk(input: &Block) -> FsResult<Hash256> {
@@ -91,6 +95,7 @@ mod key_gen {
     use super::Key128;
     use crate::*;
     use rand_core::RngCore;
+    use std::mem::size_of;
 
     #[repr(C)]
     struct KdfInput {
@@ -116,6 +121,35 @@ mod key_gen {
         };
         mac.update(input.as_ref());
         Ok(mac.finalize().into_bytes().try_into().unwrap())
+    }
+
+    pub struct KeyGen {
+        kdk: Key128,
+        used_time: u32,
+        key_gen_counter: u32,
+    }
+
+    impl KeyGen {
+        pub fn new() -> Self {
+            let mut kdk = [0u8; size_of::<Key128>()];
+            rand::thread_rng().fill_bytes(&mut kdk);
+            Self {
+                kdk,
+                used_time: 0,
+                key_gen_counter: 0,
+            }
+        }
+
+        pub fn gen_key(&mut self, pos_as_nonce: u64) -> FsResult<Key128> {
+            if self.used_time >= 16 {
+                rand::thread_rng().fill_bytes(&mut self.kdk);
+                self.used_time = 0;
+            }
+            let key = generate_random_key(&self.kdk, self.key_gen_counter, pos_as_nonce)?;
+            self.key_gen_counter += 1;
+
+            Ok(key)
+        }
     }
 }
 pub use key_gen::*;

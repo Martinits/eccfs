@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use crate::storage::{ROStorage, RWStorage};
+use crate::storage::ROStorage;
 use crate::*;
 use crate::lru::Lru;
 use std::sync::mpsc::{self, Sender, Receiver};
@@ -29,7 +29,12 @@ impl CacheMissHint {
             false
         }
     }
+
+    pub fn from_key_entry(ke: KeyEntry, encrypted: bool, nonce: u64) -> Self {
+        Self::from_fsmode(FSMode::from_key_entry(ke, encrypted), nonce)
+    }
 }
+
 enum ROCacheReq {
     Get {
         pos: u64,
@@ -113,7 +118,6 @@ impl ROCache {
     }
 }
 
-
 impl ROCacheServer {
     fn new(
         backend: Box<dyn ROStorage>,
@@ -141,7 +145,7 @@ impl ROCacheServer {
                             if let Some(hint) = miss_hint {
                                 self.cache_miss(pos, hint)
                             } else {
-                                // if cachable but not hint,
+                                // if cachable but no hint,
                                 // return None to remind caller to provide hint
                                 Ok(None)
                             }
@@ -195,39 +199,38 @@ impl ROCacheServer {
 
 pub struct RWCache {
     tx_to_server: Sender<RWCacheReq>,
-    server_handle: Option<JoinHandle<()>>,
+    // server_handle: Option<JoinHandle<()>>,
 }
 
-type RWPayLoad = RwLock<Block>;
+pub type RWPayLoad = RwLock<Block>;
 struct RWCacheServer {
     rx: Receiver<RWCacheReq>,
     lru: Lru<u64, RWPayLoad>,
     capacity: usize,
-    backend: Box<dyn RWStorage>,
 }
 
 enum RWCacheReq {
     Get {
         pos: u64,
-        cachable: bool,
-        reply: Sender<FsResult<Arc<RWPayLoad>>>,
+        reply: Sender<FsResult<Option<Arc<RWPayLoad>>>>,
     },
-    Put {
+    InsertGet {
         pos: u64,
-        cachable: bool,
-        dirty: Option<Arc<RWPayLoad>>,
-        reply: Sender<FsResult<()>>,
+        blk: Block,
+        reply: Sender<FsResult<(Arc<RWPayLoad>, Option<(u64, Block)>)>>,
     },
+    Flush {
+        reply: Sender<FsResult<Vec<(u64, Block)>>>,
+    }
 }
 
 impl RWCache {
     pub fn new(
-        backend: Box<dyn RWStorage>,
         capacity: usize,
     ) -> Self {
         let (tx, rx) = mpsc::channel();
 
-        let mut server = RWCacheServer::new(backend, capacity, rx);
+        let mut server = RWCacheServer::new(capacity, rx);
 
         let handle = thread::spawn(move || {
             loop {
@@ -240,52 +243,56 @@ impl RWCache {
 
         Self {
             tx_to_server: tx,
-            server_handle: Some(handle),
+            // server_handle: Some(handle),
         }
     }
 
-    pub fn get_blk(
-        &mut self, pos: u64, write: bool, cachable: bool
-    ) -> FsResult<Arc<RWPayLoad>> {
+    pub fn get_blk_try(&mut self, pos: u64) -> FsResult<Option<Arc<RWPayLoad>>> {
         let (tx, rx) = mpsc::channel();
         self.tx_to_server.send(RWCacheReq::Get {
             pos,
-            cachable,
             reply: tx,
         }).map_err(|_| FsError::ChannelSendError)?;
 
-        let ablk = rx.recv().map_err(|_| FsError::ChannelRecvError)??;
+        let ret = rx.recv().map_err(|_| FsError::ChannelRecvError)??;
 
-        Ok(ablk)
+        Ok(ret)
     }
 
-    pub fn put_blk(
-        &mut self, pos: u64, write: bool, cachable: bool,
-        dirty: Option<Arc<RWPayLoad>>,
-    ) -> FsResult<()> {
+    pub fn insert_and_get(
+        &mut self, pos: u64, blk: Block
+    ) -> FsResult<(Arc<RWPayLoad>, Option<(u64, Block)>)> {
         let (tx, rx) = mpsc::channel();
-        self.tx_to_server.send(RWCacheReq::Put {
+        self.tx_to_server.send(RWCacheReq::InsertGet {
             pos,
-            cachable,
-            dirty,
+            blk,
             reply: tx,
         }).map_err(|_| FsError::ChannelSendError)?;
 
-        let ablk = rx.recv().map_err(|_| FsError::ChannelRecvError)??;
+        let ret = rx.recv().map_err(|_| FsError::ChannelRecvError)??;
 
-        Ok(ablk)
+        Ok(ret)
+    }
+
+    pub fn flush(&mut self) -> FsResult<Vec<(u64, Block)>> {
+        let (tx, rx) = mpsc::channel();
+        self.tx_to_server.send(RWCacheReq::Flush {
+            reply: tx,
+        }).map_err(|_| FsError::ChannelSendError)?;
+
+        let ret = rx.recv().map_err(|_| FsError::ChannelRecvError)??;
+
+        Ok(ret)
     }
 }
 
 impl RWCacheServer {
     fn new(
-        backend: Box<dyn RWStorage>,
         capacity: usize,
         rx: Receiver<RWCacheReq>,
     ) -> Self {
         Self {
             rx,
-            backend,
             capacity,
             lru: Lru::new(capacity),
         }
@@ -293,59 +300,30 @@ impl RWCacheServer {
 
     fn process(&mut self, req: RWCacheReq) {
         match req {
-            RWCacheReq::Get { pos, cachable, reply } => {
-                let send = if cachable {
-                    match self.lru.get(&pos) {
-                        Ok(Some(ablk)) => {
-                            Ok(ablk)
-                        }
-                        Ok(None) => {
-                            // cache miss, get from backend
-                            self.cache_miss(pos)
-                        }
-                        Err(e) => Err(e),
-                    }
-                } else {
-                    // read from backend directly since not cachable
-                    self.backend.read_blk(pos).map(
-                        |blk| Arc::new(RwLock::new(blk))
-                    )
+            RWCacheReq::Get { reply, pos } => {
+                let send = self.lru.get(&pos);
+                reply.send(send).unwrap();
+            }
+            RWCacheReq::InsertGet { pos, blk, reply } => {
+                let apay = Arc::new(RwLock::new(blk));
+                let send = self.lru.insert_and_get(pos, &apay).map(
+                    |wb| (apay, wb.map(
+                        |(k, v)| (k, v.into_inner().unwrap())
+                    ))
+                );
+                reply.send(send).unwrap();
+            }
+            RWCacheReq::Flush { reply } => {
+                let send = match self.lru.flush_wb() {
+                    Ok(l) => {
+                        Ok(l.into_iter().map(
+                            |(k, v)| (k, v.into_inner().unwrap())
+                        ).collect())
+                    },
+                    Err(e) => Err(e),
                 };
                 reply.send(send).unwrap();
             }
-            RWCacheReq::Put { pos, cachable, dirty, reply } => {
-                let mut send = Ok(());
-                if cachable {
-                    if let Some(_) = dirty {
-                        send = self.lru.mark_dirty(&pos)
-                    }
-                } else if let Some(ablk) = dirty {
-                    send = self.backend_dirty(pos, ablk)
-                }
-                reply.send(send).unwrap();
-            }
         }
-    }
-
-    fn backend_dirty(&mut self, pos: u64, ablk: Arc<RWPayLoad>) -> FsResult<()> {
-        let lockblk = Arc::into_inner(ablk).ok_or_else(
-            || FsError::UnknownError
-        )?;
-        let blk = lockblk.into_inner().map_err(
-            |_| FsError::UnknownError
-        )?;
-        self.backend.write_blk(pos, &blk)
-    }
-
-    fn cache_miss(&mut self, pos: u64) -> FsResult<Arc<RWPayLoad>> {
-        let blk = self.backend.read_blk(pos)?;
-        let ablk = Arc::new(RwLock::new(blk));
-        if let Some((pos, lockblk)) = self.lru.insert_and_get(pos, &ablk)? {
-            let blk = lockblk.into_inner().map_err(
-                |_| FsError::UnknownError
-            )?;
-            self.backend.write_blk(pos, &blk)?;
-        }
-        Ok(ablk)
     }
 }

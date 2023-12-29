@@ -47,6 +47,17 @@ impl FSMode {
             false
         }
     }
+
+    pub fn into_key_entry(self) -> KeyEntry {
+        match self {
+            Self::Encrypted(key, mac) => {
+                unsafe {
+                    mem::transmute((key, mac))
+                }
+            }
+            Self::IntegrityOnly(hash) => hash,
+        }
+    }
 }
 
 macro_rules! read_from_blob {

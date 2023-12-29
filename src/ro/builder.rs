@@ -821,8 +821,7 @@ impl ROBuilder {
 }
 
 struct HTreeBuilder {
-    kdk: (Key128, u64),
-    key_gen_counter: u32,
+    key_gen: KeyGen,
     encrypted: bool,
 }
 
@@ -833,20 +832,14 @@ impl HTreeBuilder {
         rand::thread_rng().fill_bytes(&mut kdk);
 
         Ok(Self {
-            kdk: (kdk, 0),
-            key_gen_counter: 0,
+            key_gen: KeyGen::new(),
             encrypted,
         })
     }
 
     fn crypto_process_blk(&mut self, blk: &mut Block, pos: u64) -> FsResult<KeyEntry> {
         let ke = if self.encrypted {
-            if self.kdk.1 >= 16 {
-                rand::thread_rng().fill_bytes(&mut self.kdk.0);
-                self.kdk.1 = 0;
-            }
-            let key = generate_random_key(&self.kdk.0, self.key_gen_counter, pos)?;
-            self.key_gen_counter += 1;
+            let key = self.key_gen.gen_key(pos)?;
 
             let mac = aes_gcm_128_blk_enc(blk, &key, pos)?;
 

@@ -223,21 +223,22 @@ impl Inode {
     }
 
     pub fn read_data(&self, offset: usize, to: &mut [u8]) -> FsResult<usize> {
-        match &self.ext {
-            InodeExt::Reg { data, .. } => {
-                let read = data.read_exact(offset, to)?;
-                Ok(read)
-            }
-            InodeExt::RegInline { data } => {
-                if offset >= data.len() {
-                    Err(FsError::InvalidInput)
-                } else {
-                    let len = (data.len() - offset).min(to.len());
-                    to[..len].copy_from_slice(&data[offset..offset+len]);
-                    Ok(len)
+        if offset >= self.size {
+            Err(FsError::InvalidInput)
+        } else {
+            let readable = (self.size - offset).min(to.len());
+            match &self.ext {
+                InodeExt::Reg { data, .. } => {
+                    let read = data.read_exact(offset, &mut to[..readable])?;
+                    Ok(read)
                 }
+                InodeExt::RegInline { data } => {
+                    assert!(data.len() == self.size);
+                    to[..readable].copy_from_slice(&data[offset..offset+readable]);
+                    Ok(readable)
+                }
+                _ => Err(FsError::PermissionDenied),
             }
-            _ => Err(FsError::PermissionDenied),
         }
     }
 

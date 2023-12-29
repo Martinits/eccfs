@@ -32,6 +32,8 @@ impl FileStorage {
 
 impl ROStorage for FileStorage {
     fn read_blk(&mut self, pos: u64) -> FsResult<Block> {
+        let cur_len = io_try!(self.handle.seek(SeekFrom::End(0)));
+        assert!(blk2byte!(pos) < cur_len);
         let position = io_try!(self.handle.seek(SeekFrom::Start(blk2byte!(pos))));
         if position != blk2byte!(pos) {
             Err(FsError::NotSeekable)
@@ -47,6 +49,10 @@ impl RWStorage for FileStorage {
     fn write_blk(&mut self, pos: u64, from: &Block) -> FsResult<()> {
         if !self.writable {
             return Err(FsError::PermissionDenied);
+        }
+        let cur_len = io_try!(self.handle.seek(SeekFrom::End(0)));
+        if blk2byte!(pos) >= cur_len {
+            io_try!(self.handle.set_len(blk2byte!(pos + 1)));
         }
         let position = io_try!(self.handle.seek(SeekFrom::Start(blk2byte!(pos))));
         if position != blk2byte!(pos) {
