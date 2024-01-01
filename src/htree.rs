@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use crate::bcache::*;
 use crate::*;
 use crate::crypto::*;
@@ -30,7 +30,7 @@ pub mod mht {
     }
 
     pub fn phy2dataidx(phy: u64) -> u64 {
-        phy % (DATA_PER_BLK + 1)
+        phy - phy2idxphy(phy) - 1
     }
 
     // get idxblk's father's phypos and child_idx in father blk
@@ -75,6 +75,16 @@ pub mod mht {
         phy % (DATA_PER_BLK + 1) == 0
     }
 
+    pub fn get_father_idx(phy: u64) -> (u64, EntryType) {
+        if is_idx(phy) {
+            let (f, idx) = idxphy2father(phy);
+            (f, Index(idx))
+        } else {
+            (phy2idxphy(phy), Data(phy2dataidx(phy)))
+        }
+    }
+
+    #[derive(Clone)]
     pub enum EntryType {
         Index(u64),
         Data(u64)
@@ -233,6 +243,9 @@ impl ROHashTree {
         mutex_lock!(self.backend).flush()
     }
 }
+
+// if ke_buf size exceeds 1/ratio of cache size, a flush is needed
+const RW_KE_BUF_CAP_RATIO: usize = 2;
 
 // data block is forced to be cached due to write back issues
 // need to lock this whole struct
@@ -403,20 +416,13 @@ impl RWHashTree {
         self.possible_ke_wb(pos, &mut blk)?;
 
         let mode = if self.encrypted {
-            // generate new aes key on every write_back
-            let key = self.key_gen.gen_key(pos)?;
-            self.backend_write(pos, blk, Some(key))?
+            self.backend_write(pos, blk)?
         } else {
-            self.backend_write(pos, blk, None)?
+            self.backend_write(pos, blk)?
         }.into_key_entry();
 
         // ke changes, try to write back into father
-        let (father, child_idx) = if mht::is_idx(pos) {
-            let (f, idx) = mht::idxphy2father(pos);
-            (f, mht::Index(idx))
-        } else {
-            (mht::phy2idxphy(pos), mht::Data(mht::phy2dataidx(pos)))
-        };
+        let (father, child_idx) = mht::get_father_idx(pos);
         if let Some(apay) = self.cache.get_blk_try(father)? {
             let mut lock = rwlock_write!(apay);
             mht::set_ke(
@@ -426,6 +432,9 @@ impl RWHashTree {
             )?;
             self.cache.mark_dirty(father)?;
         } else {
+            if self.ke_buf.len() >= self.cache.get_cap() / RW_KE_BUF_CAP_RATIO {
+                self.flush_ke_buf()?;
+            }
             self.ke_buf.insert(pos, mode);
         }
         Ok(())
@@ -445,9 +454,11 @@ impl RWHashTree {
     }
 
     fn backend_write(
-        &mut self, pos: u64, mut blk: Block, key: Option<Key128>
+        &mut self, pos: u64, mut blk: Block,
     ) -> FsResult<FSMode> {
-        let mode = if let Some(key) = key {
+        let mode = if self.encrypted {
+            // generate new aes key on every write_back
+            let key = self.key_gen.gen_key(pos)?;
             let mac = aes_gcm_128_blk_enc(&mut blk, &key, pos)?;
             FSMode::Encrypted(key, mac)
         } else {
@@ -507,6 +518,163 @@ impl RWHashTree {
     }
 
     fn flush_ke_buf(&mut self) -> FsResult<()> {
+        let mut buf: HashMap<_, Vec<_>> = HashMap::new();
+        for (pos, ke) in mem::take(&mut self.ke_buf) {
+            let (f, idx) = mht::get_father_idx(pos);
+            if let Some(v) = buf.get_mut(&f) {
+                v.push((idx, ke));
+            } else {
+                buf.insert(f, vec![(idx, ke)]).unwrap();
+            }
+        }
+
+        fn write_ke_list(
+            apay: &Arc<RWPayLoad>,
+            ke_list: Vec<(mht::EntryType, KeyEntry)>
+        ) -> FsResult<()> {
+            let mut lock = rwlock_write!(apay);
+            for (idx, ke) in ke_list {
+                mht::set_ke(&mut lock, idx.clone(), &ke)?;
+            }
+            Ok(())
+        }
+
+        fn write_ke_list_blk(
+            blk: &mut Block,
+            ke_list: Vec<(mht::EntryType, KeyEntry)>
+        ) -> FsResult<()> {
+            for (idx, ke) in ke_list {
+                mht::set_ke(blk, idx.clone(), &ke)?;
+            }
+            Ok(())
+        }
+
+        let mut keys: Vec<_> = buf.keys().map(
+            |k| *k
+        ).collect();
+        keys.sort();
+
+        for pos in keys.into_iter().rev() {
+            let ke_list = buf.remove(&pos);
+            if ke_list.is_none() {
+                continue;
+            }
+            let ke_list = ke_list.unwrap();
+
+            if let Some(apay) = self.cache.get_blk_try(pos)? {
+                // cached just write, do not handle new ke
+                write_ke_list(&apay, ke_list)?;
+                break;
+            }
+
+            // not cached
+            let mut idxphy = pos;
+            let mut idx_stack = Vec::new();
+
+            // find backward through the tree to the first cached idx blk
+            let first_cached_idx = loop {
+                if let Some(apay) = self.cache.get_blk_try(idxphy)? {
+                    break Some(apay);
+                } else if idxphy == 0 {
+                    // root blk is not cached
+                    break None;
+                } else {
+                    let (father, child_idx) = mht::idxphy2father(idxphy);
+                    idx_stack.push((child_idx, idxphy));
+                    idxphy = father;
+                }
+            };
+            let last_ke_dest = first_cached_idx.clone();
+            let mut last_ke_idx = 0;
+
+            // find first not cached block
+            let (first_no_cache_idxphy, mode) = if let Some(apay) = first_cached_idx {
+                // any ke_list in buf for this block, write it first
+                if let Some(ke_list) = buf.remove(&idxphy) {
+                    write_ke_list(&apay, ke_list)?;
+                }
+
+                let (child_idx, child_phy) = idx_stack.pop().unwrap();
+                last_ke_idx = child_idx;
+                let ke = {
+                    let lock = rwlock_read!(apay);
+                    mht::get_ke(
+                        &lock,
+                        // must be index
+                        mht::Index(child_idx)
+                    )
+                };
+                let mode = if ke_is_zero(&ke) {
+                    // new block
+                    None
+                } else {
+                    Some(FSMode::from_key_entry(ke, self.encrypted))
+                };
+                (child_phy, mode)
+            } else {
+                // root is not cached
+                (HTREE_ROOT_BLK_PHY_POS, Some(self.root_mode.clone()))
+            };
+
+            // down the tree, use child_idx to get next idx blk, then final data blk
+            let (mut cur_phy, mut cur_mode) = (first_no_cache_idxphy, mode);
+            let mut blk_stack = Vec::new();
+            while !idx_stack.is_empty() {
+                let mut cur_blk = if let Some(mode) = cur_mode {
+                    self.backend_read(cur_phy, mode)?
+                } else {
+                    // new block
+                    [0u8; BLK_SZ]
+                };
+                if let Some(ke_list) = buf.remove(&cur_phy) {
+                    write_ke_list_blk(&mut cur_blk, ke_list)?;
+                }
+                let (child_idx, child_phy) = idx_stack.pop().unwrap();
+                blk_stack.push((cur_phy, cur_blk, child_idx));
+
+                // try get ke from ke_buf
+                let ke = mht::get_ke(
+                    &cur_blk,
+                    // must be index
+                    mht::Index(child_idx)
+                );
+                cur_mode = if ke_is_zero(&ke) {
+                    // new block
+                    None
+                } else {
+                    Some(FSMode::from_key_entry(ke, self.encrypted))
+                };
+                cur_phy = child_phy;
+            }
+
+            // get pos and write ke
+            assert!(pos == cur_phy);
+            let mut cur_blk = if let Some(mode) = cur_mode {
+                self.backend_read(cur_phy, mode)?
+            } else {
+                // new block
+                [0u8; BLK_SZ]
+            };
+            write_ke_list_blk(&mut cur_blk, ke_list)?;
+
+            let mut ke = self.backend_write(cur_phy, cur_blk)?.into_key_entry();
+
+            // write back blk_stack
+            for (pos, mut blk, child_idx) in blk_stack.into_iter().rev() {
+                mht::set_ke(&mut blk, mht::Index(child_idx), &ke)?;
+                ke = self.backend_write(pos, blk)?.into_key_entry();
+            }
+
+            // write last ke to first_cached_idx or root
+            if let Some(apay) = last_ke_dest {
+                let mut lock = rwlock_write!(apay);
+                mht::set_ke(&mut lock, mht::Index(last_ke_idx), &ke)?;
+            } else {
+                // last ke goes to root
+                self.root_mode = FSMode::from_key_entry(ke, self.encrypted);
+            }
+        }
+
         Ok(())
     }
 

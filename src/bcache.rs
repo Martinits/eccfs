@@ -52,7 +52,7 @@ pub struct ROCache {
     // server_handle: Option<JoinHandle<()>>,
 }
 
-pub const DEFAULT_CACHE_CAP: usize = 2048;
+pub const DEFAULT_CACHE_CAP: usize = 256;
 
 struct ROCacheServer {
     rx: Receiver<ROCacheReq>,
@@ -199,6 +199,7 @@ impl ROCacheServer {
 
 pub struct RWCache {
     tx_to_server: Sender<RWCacheReq>,
+    capacity: usize,
     // server_handle: Option<JoinHandle<()>>,
 }
 
@@ -246,8 +247,13 @@ impl RWCache {
 
         Self {
             tx_to_server: tx,
+            capacity,
             // server_handle: Some(handle),
         }
+    }
+
+    pub fn get_cap(&self) -> usize {
+        self.capacity
     }
 
     pub fn get_blk_try(&mut self, pos: u64) -> FsResult<Option<Arc<RWPayLoad>>> {

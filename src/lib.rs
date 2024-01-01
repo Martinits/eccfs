@@ -58,6 +58,13 @@ impl FSMode {
             Self::IntegrityOnly(hash) => hash,
         }
     }
+
+    pub fn get_key(&self) -> Option<Key128> {
+        match self {
+            Self::Encrypted(key, _) => Some(key.clone()),
+            Self::IntegrityOnly(_) => None,
+        }
+    }
 }
 
 macro_rules! read_from_blob {
