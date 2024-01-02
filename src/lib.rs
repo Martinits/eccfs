@@ -11,7 +11,7 @@ pub mod error;
 pub use error::*;
 pub use bcache::DEFAULT_CACHE_CAP;
 use crypto::*;
-use std::mem;
+use std::mem::{self, size_of};
 pub use log::{warn, info, debug};
 
 
@@ -40,6 +40,14 @@ impl FSMode {
         }
     }
 
+    pub fn new_with_key(key: Option<Key128>) -> Self {
+        if let Some(key) = key {
+            Self::Encrypted(key, [0u8; size_of::<MAC128>()])
+        } else {
+            Self::IntegrityOnly([0u8; size_of::<Hash256>()])
+        }
+    }
+
     pub fn is_encrypted(&self) -> bool {
         if let Self::Encrypted(_, _) = self {
             true
@@ -63,6 +71,16 @@ impl FSMode {
         match self {
             Self::Encrypted(key, _) => Some(key.clone()),
             Self::IntegrityOnly(_) => None,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::Encrypted(key, mac)
+                => *key == [0u8; size_of::<Key128>()]
+                    && *mac == [0u8; size_of::<MAC128>()],
+            Self::IntegrityOnly(hash)
+                => *hash == [0u8; size_of::<Hash256>()],
         }
     }
 }
