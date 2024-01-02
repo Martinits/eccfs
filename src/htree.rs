@@ -256,9 +256,15 @@ pub struct RWHashTree {
     backend: Box<dyn RWStorage>,
     length: u64, // in blocks
     encrypted: bool,
-    root_mode: Option<FSMode>,
+    root_mode: FSMode,
     ke_buf: HashMap<u64, KeyEntry>,
     key_gen: KeyGen,
+}
+
+impl Drop for RWHashTree {
+    fn drop(&mut self) {
+        self.cache.abort().unwrap();
+    }
 }
 
 impl RWHashTree {
@@ -274,16 +280,25 @@ impl RWHashTree {
             backend,
             length,
             encrypted,
-            root_mode,
+            root_mode: root_mode.unwrap_or(FSMode::new_zero(encrypted)),
             ke_buf: HashMap::new(),
             key_gen: KeyGen::new(),
         }
     }
 
+    fn pad_to(&mut self, nr_blk: u64) -> FsResult<()> {
+        // if root mode is zero, make one
+        Ok(())
+    }
+
     // pos is by block
     pub fn get_blk(&mut self, pos: u64, write: bool) -> FsResult<Option<Arc<RWPayLoad>>> {
-        if !write && pos >= self.length {
-            return Ok(None)
+        if pos >= self.length {
+            if !write {
+                return Ok(None);
+            }
+            // pad file length to pos + 1
+            self.pad_to(pos + 1)?;
         }
 
         let data_phy = mht::logi2phy(pos);
@@ -306,10 +321,10 @@ impl RWHashTree {
                 if safe_cnt >= MAX_LOOP_CNT {
                     panic!("Loop exceeds MAX count!");
                 } else if let Some(apay) = self.cache.get_blk_try(idxphy)? {
-                    break Some(apay);
+                    break apay;
                 } else if idxphy == HTREE_ROOT_BLK_PHY_POS {
                     // root blk is not cached
-                    break None;
+                    break self.cache_miss(idxphy, self.root_mode.clone())?;
                 } else {
                     let (father, child_idx) = mht::idxphy2father(idxphy);
                     idx_stack.push((child_idx, idxphy));
@@ -319,42 +334,9 @@ impl RWHashTree {
             }
         };
 
-        // find first not cached block
-        let (first_no_cache_idxphy, mode) = if let Some(apay) = first_cached_idx {
-            let (child_idx, child_phy) = idx_stack.pop().unwrap();
-            // try get ke from ke_buf
-            let ke = if let Some(ke) = self.ke_buf.remove(&pos) {
-                ke
-            } else {
-                let lock = rwlock_read!(apay);
-                mht::get_ke(
-                    &lock,
-                    // if this is the last index, it's an data block
-                    if idx_stack.is_empty() {
-                        mht::Data(child_idx)
-                    } else {
-                        mht::Index(child_idx)
-                    }
-                )
-            };
-            let mode = if ke_is_zero(&ke) {
-                // new block
-                assert!(child_phy >= self.length);
-                assert!(write);
-                None
-            } else {
-                Some(FSMode::from_key_entry(ke, self.encrypted))
-            };
-            (child_phy, mode)
-        } else {
-            // root is not cached
-            (HTREE_ROOT_BLK_PHY_POS, self.root_mode.clone())
-        };
-
         // down the tree, use child_idx to get next idx blk, then final data blk
-        let (mut cur_phy, mut cur_mode) = (first_no_cache_idxphy, mode);
+        let mut cur_apay = first_cached_idx;
         while !idx_stack.is_empty() {
-            let cur_apay = self.cache_miss(cur_phy, cur_mode)?;
             let (child_idx, child_phy) = idx_stack.pop().unwrap();
             // try get ke from ke_buf
             let ke = if let Some(ke) = self.ke_buf.remove(&pos) {
@@ -371,39 +353,29 @@ impl RWHashTree {
                     }
                 )
             };
-            cur_mode = if ke_is_zero(&ke) {
-                // new block
-                assert!(child_phy >= self.length);
-                assert!(write);
-                None
-            } else {
-                Some(FSMode::from_key_entry(ke, self.encrypted))
-            };
-            cur_phy = child_phy;
-        }
-        let data_apay = self.cache_miss(cur_phy, cur_mode)?;
-        if write {
-            self.cache.mark_dirty(cur_phy)?;
+            let mode = FSMode::from_key_entry(ke, self.encrypted);
+            cur_apay = self.cache_miss(child_phy, mode)?;
         }
 
-        self.length = self.length.max(pos + 1);
-        Ok(Some(data_apay))
+        // mark dirty
+        if write {
+            self.cache.mark_dirty(pos)?;
+        }
+
+        Ok(Some(cur_apay))
     }
 
-    // mode == None means to create new block
     fn cache_miss(
-        &mut self, pos: u64, mode: Option<FSMode>
+        &mut self, pos: u64, mode: FSMode
     ) -> FsResult<Arc<RWPayLoad>> {
-        let blk = if let Some(mode) = mode {
-            let mut blk = self.backend_read(pos, mode)?;
-            self.possible_ke_wb(pos, &mut blk)?;
-            blk
-        } else {
-            // create
-            [0u8; BLK_SZ]
-        };
+        let mut blk = self.backend_read(pos, mode)?;
+        let dirty = self.possible_ke_wb(pos, &mut blk)?;
 
         let (apay, wb) = self.cache.insert_and_get(pos, blk)?;
+        if dirty {
+            self.cache.mark_dirty(pos)?;
+        }
+
         if let Some((pos, blk)) = wb {
             // need write back
             self.write_back(pos, blk)?;
@@ -420,25 +392,27 @@ impl RWHashTree {
             self.backend_write(pos, blk)?
         };
 
-        // ke changes, try to write back into father
+        // if is root, just modify in struct
         if pos == HTREE_ROOT_BLK_PHY_POS {
-            self.root_mode = Some(mode);
+            self.root_mode = mode;
+            return Ok(())
+        }
+
+        // ke changes, try to write back into father
+        let ke = mode.into_key_entry();
+        let (father, child_idx) = mht::get_father_idx(pos);
+        if let Some(apay) = self.cache.get_blk_try(father)? {
+            let mut lock = rwlock_write!(apay);
+            mht::set_ke(
+                &mut lock,
+                child_idx,
+                &ke,
+            )?;
+            self.cache.mark_dirty(father)?;
         } else {
-            let ke = mode.into_key_entry();
-            let (father, child_idx) = mht::get_father_idx(pos);
-            if let Some(apay) = self.cache.get_blk_try(father)? {
-                let mut lock = rwlock_write!(apay);
-                mht::set_ke(
-                    &mut lock,
-                    child_idx,
-                    &ke,
-                )?;
-                self.cache.mark_dirty(father)?;
-            } else {
-                if self.ke_buf.len() >= self.cache.get_cap() / RW_KE_BUF_CAP_RATIO {
-                    self.flush_ke_buf()?;
-                }
-                self.ke_buf.insert(pos, ke);
+            self.ke_buf.insert(pos, ke);
+            if self.ke_buf.len() >= self.cache.get_cap() / RW_KE_BUF_CAP_RATIO {
+                self.flush_ke_buf()?;
             }
         }
         Ok(())
@@ -513,12 +487,14 @@ impl RWHashTree {
     }
 
     // flush all blocks including root
-    pub fn flush(&mut self) -> FsResult<()> {
+    pub fn flush(&mut self) -> FsResult<FSMode> {
         for (k, v) in self.cache.flush()?.into_iter() {
             self.write_back(k, v)?;
         }
 
-        self.flush_ke_buf()
+        self.flush_ke_buf()?;
+
+        Ok(self.root_mode.clone())
     }
 
     // this function does not modify cache (but maybe cached blocks)
@@ -529,7 +505,7 @@ impl RWHashTree {
             if let Some(v) = buf.get_mut(&f) {
                 v.push((idx, ke));
             } else {
-                buf.insert(f, vec![(idx, ke)]).unwrap();
+                assert!(buf.insert(f, vec![(idx, ke)]).is_none());
             }
         }
 
@@ -546,13 +522,7 @@ impl RWHashTree {
             // root already cached
             None
         } else {
-            let blk = if let Some(m) = self.root_mode.clone() {
-                self.backend_read(HTREE_ROOT_BLK_PHY_POS, m)?
-            } else {
-                // new block
-                [0u8; BLK_SZ]
-            };
-            Some(blk)
+            Some(self.backend_read(HTREE_ROOT_BLK_PHY_POS, self.root_mode.clone())?)
         };
 
         let mut keys: Vec<_> = buf.keys().map(
@@ -578,63 +548,44 @@ impl RWHashTree {
             let mut idxphy = pos;
             let mut idx_stack = Vec::new();
 
+            let mut last_ke_dest = None;
             // find backward through the tree to the first cached idx blk
-            let first_cached_idx = loop {
+            // return first not cached block
+            let (first_not_cached, mode) = loop {
                 if let Some(apay) = self.cache.get_blk_try(idxphy)? {
-                    break Some(apay);
+                    // a cache block should not have any pending ke in ke_buf
+                    assert!(buf.remove(&idxphy).is_none());
+
+                    let (child_idx, child_phy) = idx_stack.pop().unwrap();
+                    last_ke_dest = Some((apay.clone(), child_idx));
+
+                    let ke = {
+                        let lock = rwlock_read!(apay);
+                        mht::get_ke(
+                            &lock,
+                            // must be index
+                            mht::Index(child_idx)
+                        )
+                    };
+                    break (child_phy, FSMode::from_key_entry(ke, self.encrypted));
                 } else if idxphy == HTREE_ROOT_BLK_PHY_POS {
                     // root blk is not cached
-                    break None;
+                    break (idxphy, self.root_mode.clone());
                 } else {
                     let (father, child_idx) = mht::idxphy2father(idxphy);
                     idx_stack.push((child_idx, idxphy));
                     idxphy = father;
                 }
             };
-            let last_ke_dest = first_cached_idx.clone();
-            let mut last_ke_idx = 0;
 
-            // find first not cached block
-            let (first_no_cache_idxphy, mode) = if let Some(apay) = first_cached_idx {
-                // any ke_list in buf for this block, write it first
-                if let Some(ke_list) = buf.remove(&idxphy) {
-                    let mut lock = rwlock_write!(apay);
-                    write_ke_list!(&mut lock, ke_list);
-                }
-
-                let (child_idx, child_phy) = idx_stack.pop().unwrap();
-                last_ke_idx = child_idx;
-                let ke = {
-                    let lock = rwlock_read!(apay);
-                    mht::get_ke(
-                        &lock,
-                        // must be index
-                        mht::Index(child_idx)
-                    )
-                };
-                let mode = if ke_is_zero(&ke) {
-                    // new block
-                    None
-                } else {
-                    Some(FSMode::from_key_entry(ke, self.encrypted))
-                };
-                (child_phy, mode)
-            } else {
-                // root is not cached
-                (HTREE_ROOT_BLK_PHY_POS, self.root_mode.clone())
-            };
-
+            let (mut cur_phy, mut cur_mode) = (first_not_cached, mode);
             // down the tree, use child_idx to get next idx blk
-            let (mut cur_phy, mut cur_mode) = (first_no_cache_idxphy, mode);
             let mut blk_stack = Vec::new();
             while !idx_stack.is_empty() {
                 let mut cur_blk = if cur_phy == HTREE_ROOT_BLK_PHY_POS {
                     root_blk.clone().unwrap()
-                } else if let Some(mode) = cur_mode {
-                    self.backend_read(cur_phy, mode)?
                 } else {
-                    // new block
-                    [0u8; BLK_SZ]
+                    self.backend_read(cur_phy, cur_mode)?
                 };
                 if let Some(ke_list) = buf.remove(&cur_phy) {
                     write_ke_list!(cur_blk, ke_list);
@@ -648,12 +599,7 @@ impl RWHashTree {
                     // must be index
                     mht::Index(child_idx)
                 );
-                cur_mode = if ke_is_zero(&ke) {
-                    // new block
-                    None
-                } else {
-                    Some(FSMode::from_key_entry(ke, self.encrypted))
-                };
+                cur_mode = FSMode::from_key_entry(ke, self.encrypted);
                 cur_phy = child_phy;
             }
 
@@ -664,13 +610,7 @@ impl RWHashTree {
                 write_ke_list!(root_blk.as_mut().unwrap(), ke_list);
                 continue;
             }
-
-            let mut cur_blk = if let Some(mode) = cur_mode {
-                self.backend_read(cur_phy, mode)?
-            } else {
-                // new block
-                [0u8; BLK_SZ]
-            };
+            let mut cur_blk = self.backend_read(cur_phy, cur_mode)?;
             write_ke_list!(cur_blk, ke_list);
 
             // write back "pos"
@@ -689,27 +629,30 @@ impl RWHashTree {
             }
 
             // write last ke to first_cached_idx or root
-            if let Some(apay) = last_ke_dest {
+            if let Some((apay, idx)) = last_ke_dest {
                 let mut lock = rwlock_write!(apay);
-                mht::set_ke(&mut lock, mht::Index(last_ke_idx), &ke)?;
+                mht::set_ke(&mut lock, mht::Index(idx), &ke)?;
             } else {
                 // last ke goes to root
-                self.root_mode = Some(FSMode::from_key_entry(ke, self.encrypted));
+                self.root_mode = FSMode::from_key_entry(ke, self.encrypted);
             }
         }
 
         // unpin root block and write back
         if let Some(blk) = root_blk {
-            self.root_mode = Some(self.backend_write(HTREE_ROOT_BLK_PHY_POS, blk)?);
+            self.root_mode = self.backend_write(HTREE_ROOT_BLK_PHY_POS, blk)?;
         }
 
         Ok(())
     }
 
-    fn possible_ke_wb(&mut self, pos: u64, blk: &mut Block) -> FsResult<()> {
+    // return whether make changes to this block
+    fn possible_ke_wb(&mut self, pos: u64, blk: &mut Block) -> FsResult<bool> {
         if !mht::is_idx(pos) {
-            return Ok(());
+            return Ok(false);
         }
+
+        let mut dirty = false;
 
         // idx ke
         let mut child_phy = mht::get_first_idx_child_phy(pos);
@@ -720,6 +663,7 @@ impl RWHashTree {
                     mht::Index(i),
                     &ke,
                 )?;
+                dirty = true;
             }
             child_phy = mht::next_idx_sibling_phy(child_phy);
         }
@@ -733,9 +677,155 @@ impl RWHashTree {
                     mht::Index(i),
                     &ke,
                 )?;
+                dirty = true;
             }
             child_phy = mht::next_data_sibling_phy(child_phy);
         }
+
+        Ok(dirty)
+    }
+}
+
+mod test {
+    use crate::*;
+    use super::*;
+
+    const MODE_PATH: &str = "test/mode";
+    fn open_htree(htree_path: &str) -> FsResult<RWHashTree> {
+        use crate::bcache::*;
+        use crate::*;
+        use crate::storage::{FileStorage, RWStorage};
+        use super::*;
+        use std::path::Path;
+        use std::fs::{self, File, OpenOptions};
+        use std::io::prelude::*;
+
+        let mut len = io_try!(fs::metadata(htree_path)).len();
+        assert_eq!(len % BLK_SZ as u64, 0);
+        len /= BLK_SZ as u64;
+
+        let mode = if Path::new(MODE_PATH).exists() {
+            let mut f = io_try!(File::open("test/mode"));
+            let mut b = vec![0u8; std::mem::size_of::<FSMode>()];
+            f.read_exact(&mut b).unwrap();
+            let mode = unsafe {
+                &*(b.as_ptr() as *const FSMode)
+            };
+            match mode {
+                FSMode::IntegrityOnly(hash) => {
+                    let s = hex::encode_upper(hash);
+                    info!("Run in IntegrityOnly Mode:");
+                    info!("Hash: {}", s);
+                }
+                FSMode::Encrypted(key, mac) => {
+                    info!("Run in Encrypted Mode:");
+                    let k = hex::encode_upper(key);
+                    let m = hex::encode_upper(mac);
+                    info!("Key: {}", k);
+                    info!("Mac: {}", m);
+                }
+            }
+            Some(mode.clone())
+        } else {
+            assert_eq!(len, 0);
+            info!("Mode file not found, run with empty file");
+            None
+        };
+
+        let back = FileStorage::new(
+            Path::new(htree_path),
+            true,
+        )?;
+        let cache = RWCache::new(10);
+        Ok(RWHashTree::new(
+            cache,
+            Box::new(back),
+            len,
+            mode,
+            true,
+        ))
+    }
+
+    fn close_htree(mut htree: RWHashTree) -> FsResult<()> {
+        use crate::bcache::*;
+        use crate::*;
+        use crate::storage::{FileStorage, RWStorage};
+        use super::*;
+        use std::path::Path;
+        use std::fs::{self, File, OpenOptions};
+        use std::io::prelude::*;
+
+        let mode = htree.flush()?;
+
+        // write mode to file
+        let _ = fs::remove_file(MODE_PATH);
+        let mut f = OpenOptions::new().write(true).create_new(true).open(MODE_PATH).unwrap();
+        let written = f.write(unsafe {
+            std::slice::from_raw_parts(
+                &mode as *const FSMode as *const u8,
+                std::mem::size_of::<FSMode>(),
+            )
+        }).unwrap();
+        assert_eq!(written, std::mem::size_of::<FSMode>());
+        match mode {
+            FSMode::IntegrityOnly(hash) => {
+                let s = hex::encode_upper(hash);
+                info!("Flush gets IntegrityOnly Mode:");
+                info!("Hash: {}", s);
+            }
+            FSMode::Encrypted(key, mac) => {
+                info!("Flush gets Encrypted Mode:");
+                let k = hex::encode_upper(key);
+                let m = hex::encode_upper(mac);
+                info!("Key: {}", k);
+                info!("Mac: {}", m);
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn rwhtree() -> FsResult<()> {
+        use crate::bcache::*;
+        use crate::*;
+        use crate::storage::{FileStorage, RWStorage};
+        use super::*;
+        use std::path::Path;
+        use std::fs::{self, File, OpenOptions};
+        use std::io::prelude::*;
+
+        env_logger::builder()
+            .filter_level(log::LevelFilter::Debug)
+            .init();
+
+        let mut buf = [0u8; BLK_SZ];
+        let mut writer: &mut [u8] = buf.as_mut_slice();
+
+        let offsets: Vec<_> = (0..10*BLK_SZ).step_by(BLK_SZ).collect();
+
+        let mut htree = open_htree("test/test.rwhtree")?;
+
+        let string = "hello!!!";
+
+        let written = io_try!(writer.write(string.as_bytes()));
+        assert_eq!(written, string.len());
+
+        for off in offsets.iter() {
+            let written = htree.write_exact(*off, &buf[..string.len()])?;
+            assert_eq!(written, string.len());
+        }
+
+        close_htree(htree)?;
+
+        let mut htree = open_htree("test/test.rwhtree")?;
+
+        for off in offsets.iter() {
+            let read = htree.read_exact(*off, &mut buf[..string.len()])?;
+            assert_eq!(read, string.len());
+        }
+
+        close_htree(htree)?;
 
         Ok(())
     }

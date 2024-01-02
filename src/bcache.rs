@@ -4,7 +4,7 @@ use crate::*;
 use crate::lru::Lru;
 use std::sync::mpsc::{self, Sender, Receiver};
 use std::sync::RwLock;
-use std::thread::{self, JoinHandle};
+use std::thread;
 use crate::crypto::*;
 
 
@@ -43,6 +43,7 @@ enum ROCacheReq {
         reply: Sender<FsResult<Option<Arc<Block>>>>,
     },
     Flush,
+    Abort,
 }
 
 // superblock is not in cache, and stick to memory during runtime
@@ -75,7 +76,12 @@ impl ROCache {
         let _handle = thread::spawn(move || {
             loop {
                 match server.rx.recv() {
-                    Ok(req) => server.process(req),
+                    Ok(req) => {
+                        if let ROCacheReq::Abort = &req {
+                            break;
+                        }
+                        server.process(req);
+                    },
                     Err(e) => panic!("Cache server received an error: {:?}", e),
                 }
             }
@@ -115,6 +121,10 @@ impl ROCache {
 
     pub fn flush(&mut self) -> FsResult<()> {
         self.tx_to_server.send(ROCacheReq::Flush).map_err(|_| FsError::ChannelSendError)
+    }
+
+    pub fn abort(&mut self) -> FsResult<()> {
+        self.tx_to_server.send(ROCacheReq::Abort).map_err(|_| FsError::ChannelSendError)
     }
 }
 
@@ -171,6 +181,7 @@ impl ROCacheServer {
             ROCacheReq::Flush => {
                 self.lru.flush_no_wb().unwrap();
             }
+            _ => panic!("ROCacheServer: Unexpected msg"),
         }
     }
 
@@ -225,7 +236,8 @@ enum RWCacheReq {
     },
     Flush {
         reply: Sender<FsResult<Vec<(u64, Block)>>>,
-    }
+    },
+    Abort,
 }
 
 impl RWCache {
@@ -239,7 +251,12 @@ impl RWCache {
         let _handle = thread::spawn(move || {
             loop {
                 match server.rx.recv() {
-                    Ok(req) => server.process(req),
+                    Ok(req) => {
+                        if let RWCacheReq::Abort = &req {
+                            break;
+                        }
+                        server.process(req)
+                    },
                     Err(e) => panic!("Cache server received an error: {:?}", e),
                 }
             }
@@ -300,6 +317,12 @@ impl RWCache {
 
         Ok(ret)
     }
+
+    pub fn abort(&mut self) -> FsResult<()> {
+        self.tx_to_server.send(RWCacheReq::Abort)
+            .map_err(|_| FsError::ChannelSendError)?;
+        Ok(())
+    }
 }
 
 impl RWCacheServer {
@@ -343,6 +366,7 @@ impl RWCacheServer {
                 };
                 reply.send(send).unwrap();
             }
+            _ => panic!("RWCacheServer: Unexpected msg"),
         }
     }
 }

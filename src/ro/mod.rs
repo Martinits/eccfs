@@ -34,6 +34,12 @@ pub struct ROFS {
     de_cac: Option<Mutex<ChannelLru<String, InodeID>>>,
 }
 
+impl Drop for ROFS {
+    fn drop(&mut self) {
+        self.backend.abort().unwrap();
+    }
+}
+
 impl ROFS {
     pub fn new(
         path: &Path,

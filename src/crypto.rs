@@ -12,9 +12,9 @@ pub type MAC128 = [u8; 16];
 pub type Hash256 = [u8; 32];
 pub type KeyEntry = [u8; 32];
 
-pub fn ke_is_zero(ke: &KeyEntry) -> bool {
-    *ke == [0u8; 32]
-}
+// pub fn ke_is_zero(ke: &KeyEntry) -> bool {
+//     *ke == [0u8; 32]
+// }
 
 pub const KEY_ENTRY_SZ: usize = 32;
 

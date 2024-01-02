@@ -29,6 +29,10 @@ pub enum FSMode {
 }
 
 impl FSMode {
+    pub fn new_zero(encrypted: bool) -> Self {
+        Self::from_key_entry([0u8; 32], encrypted)
+    }
+
     pub fn from_key_entry(ke: KeyEntry, encrypted: bool) -> Self {
         if encrypted {
             let (key, mac): (Key128, MAC128) = unsafe {
