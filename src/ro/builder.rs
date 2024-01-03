@@ -535,8 +535,13 @@ impl ROBuilder {
 
         // dinode dir base
         let mut dinode_base = Self::gen_inode_base(path)?;
-        let inode_base_size = de_list_raw.len() as u64;
+        // root inode nlink is always 1
+        if is_root {
+            dinode_base.nlinks = 1;
+        }
+
         // for dir inodes, size represents entry num without . and ..
+        let inode_base_size = de_list_raw.len() as u64;
         dinode_base.size = inode_base_size;
 
         let (dinode_bytes, dot) = if de_list_raw.len() <= DE_INLINE_MAX as usize {

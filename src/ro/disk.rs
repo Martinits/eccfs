@@ -10,7 +10,8 @@ pub struct DInodeBase {
     /// FTYPE: 0 - reg, 1 - dir, 2 - lnk
     pub mode: u16,
 
-    /// number of hard links
+    /// number of hard links, including , and excluding ..
+    /// for example, a normal inode with no other hard links has an "nlinks" of 1
     pub nlinks: u16,
 
     /// uid
