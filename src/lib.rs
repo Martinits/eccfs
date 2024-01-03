@@ -15,7 +15,7 @@ use std::mem::{self, size_of};
 pub use log::{warn, info, debug};
 
 
-pub const MAX_LOOP_CNT: u64 = 10001;
+pub const MAX_LOOP_CNT: u64 = 10000;
 
 pub const BLK_SZ: usize = 4096;
 pub type Block = [u8; 4096];

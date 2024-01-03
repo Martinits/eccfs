@@ -287,7 +287,46 @@ impl RWHashTree {
     }
 
     fn pad_to(&mut self, nr_blk: u64) -> FsResult<()> {
-        // if root mode is zero, make one
+        if nr_blk < self.length {
+            return Ok(());
+        }
+
+        let htree_phy_nr_blk = mht::get_phy_nr_blk(nr_blk);
+        self.backend.expand_len(htree_phy_nr_blk)?;
+
+        let mut idx_pos = 0;
+        let mut idx_blk = None;
+        let mut idx_blk_next_idx = 0;
+        for pos in mht::get_phy_nr_blk(self.length)..htree_phy_nr_blk {
+            if mht::is_idx(pos) {
+                if let Some(blk) = idx_blk {
+                    let ke = self.backend_write(idx_pos, blk)?.into_key_entry();
+                    self.buffer_ke(idx_pos, ke);
+                }
+                idx_blk = Some([0u8; BLK_SZ]);
+                idx_pos = pos;
+                idx_blk_next_idx = 0;
+            } else {
+                let ke = self.backend_write(pos, [0u8; BLK_SZ])?.into_key_entry();
+                if let Some(idx) = &mut idx_blk {
+                    assert!(idx_blk_next_idx < mht::DATA_PER_BLK);
+                    mht::set_ke(idx, mht::Data(idx_blk_next_idx), &ke)?;
+                    idx_blk_next_idx += 1;
+                } else {
+                    // idx block already exists
+                    self.buffer_ke(pos, ke);
+                }
+            }
+        }
+        if let Some(blk) = idx_blk {
+            let ke = self.backend_write(idx_pos, blk)?.into_key_entry();
+            self.buffer_ke(idx_pos, ke);
+        }
+
+        // reset htree length
+        self.length = nr_blk;
+
+        self.possible_flush_ke_buf()?;
         Ok(())
     }
 
@@ -339,7 +378,7 @@ impl RWHashTree {
         while !idx_stack.is_empty() {
             let (child_idx, child_phy) = idx_stack.pop().unwrap();
             // try get ke from ke_buf
-            let ke = if let Some(ke) = self.ke_buf.remove(&pos) {
+            let ke = if let Some(ke) = self.ke_buf.remove(&child_phy) {
                 ke
             } else {
                 let lock = rwlock_read!(cur_apay);
@@ -359,7 +398,7 @@ impl RWHashTree {
 
         // mark dirty
         if write {
-            self.cache.mark_dirty(pos)?;
+            self.cache.mark_dirty(mht::logi2phy(pos))?;
         }
 
         Ok(Some(cur_apay))
@@ -410,10 +449,8 @@ impl RWHashTree {
             )?;
             self.cache.mark_dirty(father)?;
         } else {
-            self.ke_buf.insert(pos, ke);
-            if self.ke_buf.len() >= self.cache.get_cap() / RW_KE_BUF_CAP_RATIO {
-                self.flush_ke_buf()?;
-            }
+            self.buffer_ke(pos, ke);
+            self.possible_flush_ke_buf()?;
         }
         Ok(())
     }
@@ -488,6 +525,7 @@ impl RWHashTree {
 
     // flush all blocks including root
     pub fn flush(&mut self) -> FsResult<FSMode> {
+        debug!("Flush htree");
         for (k, v) in self.cache.flush()?.into_iter() {
             self.write_back(k, v)?;
         }
@@ -499,6 +537,12 @@ impl RWHashTree {
 
     // this function does not modify cache (but maybe cached blocks)
     fn flush_ke_buf(&mut self) -> FsResult<()> {
+        if self.ke_buf.len() == 0 {
+            return Ok(());
+        }
+
+        debug!("Flush ke buf");
+        debug!("ke_buf: {:?}", self.ke_buf.keys().collect::<Vec<_>>());
         let mut buf: HashMap<_, Vec<_>> = HashMap::new();
         for (pos, ke) in mem::take(&mut self.ke_buf) {
             let (f, idx) = mht::get_father_idx(pos);
@@ -646,7 +690,22 @@ impl RWHashTree {
         Ok(())
     }
 
-    // return whether make changes to this block
+    fn buffer_ke(&mut self, pos: u64, ke: KeyEntry) {
+        if pos == HTREE_ROOT_BLK_PHY_POS {
+            self.root_mode = FSMode::from_key_entry(ke, self.encrypted);
+        } else {
+            self.ke_buf.insert(pos, ke);
+        }
+    }
+
+    fn possible_flush_ke_buf(&mut self) -> FsResult<()> {
+        if self.ke_buf.len() >= self.cache.get_cap() / RW_KE_BUF_CAP_RATIO {
+            self.flush_ke_buf()?;
+        }
+        Ok(())
+    }
+
+    // return whether make changes to this block or not
     fn possible_ke_wb(&mut self, pos: u64, blk: &mut Block) -> FsResult<bool> {
         if !mht::is_idx(pos) {
             return Ok(false);
@@ -674,7 +733,7 @@ impl RWHashTree {
             if let Some(ke) = self.ke_buf.remove(&child_phy) {
                 mht::set_ke(
                     blk,
-                    mht::Index(i),
+                    mht::Data(i),
                     &ke,
                 )?;
                 dirty = true;
@@ -742,7 +801,7 @@ mod test {
             Box::new(back),
             len,
             mode,
-            true,
+            false,
         ))
     }
 
@@ -802,7 +861,9 @@ mod test {
         let mut buf = [0u8; BLK_SZ];
         let mut writer: &mut [u8] = buf.as_mut_slice();
 
-        let offsets: Vec<_> = (0..10*BLK_SZ).step_by(BLK_SZ).collect();
+        let offsets: Vec<_> = (0..1000*BLK_SZ).step_by(BLK_SZ).collect();
+
+        debug!("Writing");
 
         let mut htree = open_htree("test/test.rwhtree")?;
 
@@ -817,6 +878,8 @@ mod test {
         }
 
         close_htree(htree)?;
+
+        debug!("Checking");
 
         let mut htree = open_htree("test/test.rwhtree")?;
 
