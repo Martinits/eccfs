@@ -679,7 +679,7 @@ impl ROBuilder {
 
             let dinode_reg = DInodeReg {
                 base: dinode_base,
-                crypto_blob: ke,
+                key_entry: ke,
                 data_start: data_start / BLK_SZ as u64,
                 data_len: nr_blk as u64,
             };

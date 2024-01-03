@@ -105,7 +105,7 @@ impl Inode {
                         data_len: dinode.data_len,
                         data: ROHashTree::new(
                             backend, file_sec_start + dinode.data_start, dinode.data_len,
-                            FSMode::from_key_entry(dinode.crypto_blob, encrypted), cache_data,
+                            FSMode::from_key_entry(dinode.key_entry, encrypted), cache_data,
                         )
                     }
                 };

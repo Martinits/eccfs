@@ -48,7 +48,7 @@ pub struct DInodeReg {
 
     /// 128bit key + 128bit MAC for encrypted mode
     /// 256bit HASH for integrity only mode
-    pub crypto_blob: [u8; 32],
+    pub key_entry: [u8; 32],
 
     /// first block of file data, i.e. the Hash Tree
     /// starting from File Section (recorded in superblock)
@@ -170,7 +170,7 @@ mod test {
                 mode: 7,
                 nlinks: 16,
             },
-            crypto_blob: [8; 32],
+            key_entry: [8; 32],
             data_start: 64,
             data_len: 0,
         };
@@ -196,6 +196,6 @@ mod test {
         assert_eq!(a.base.nlinks, 16);
         assert_eq!(a.data_start, 64);
         assert_eq!(a.data_len, 0);
-        assert_eq!(a.crypto_blob, [8; 32]);
+        assert_eq!(a.key_entry, [8; 32]);
     }
 }

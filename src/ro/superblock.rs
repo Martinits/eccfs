@@ -99,17 +99,7 @@ impl Into<SuperBlock> for DSuperBlock {
 }
 
 impl SuperBlock {
-    pub fn new(mode: FSMode, mut raw_blk: Block) -> FsResult<Self> {
-        // check crypto
-        match &mode {
-            FSMode::Encrypted(ref key, ref mac) => {
-                aes_gcm_128_blk_dec(&mut raw_blk, key, mac, SUPERBLOCK_POS)?;
-            }
-            FSMode::IntegrityOnly(ref hash) => {
-                sha3_256_blk_check(&raw_blk, hash)?;
-            }
-        }
-
+    pub fn new(mut raw_blk: Block) -> FsResult<Self> {
         let dsb = unsafe {
             (raw_blk.as_ptr() as *const DSuperBlock).as_ref().ok_or(FsError::UnknownError)?
         };
@@ -117,7 +107,7 @@ impl SuperBlock {
         // check constants
         if dsb.magic != super::ROFS_MAGIC
             || dsb.bsize != BLK_SZ as u64 || dsb.namemax != NAME_MAX {
-            return Err(FsError::SuperBlockCheckFailed)
+            Err(FsError::SuperBlockCheckFailed)
         } else {
             Ok(dsb.clone().into())
         }
