@@ -245,11 +245,11 @@ impl Inode {
     pub fn get_meta(&self) -> FsResult<Metadata> {
         Ok(Metadata {
             iid: self.iid,
-            size: if self.tp == FileType::Lnk {
-                0
-            } else {
-                self.size as u64
-            },
+            size: match self.tp {
+                FileType::Reg => self.size,
+                FileType::Dir => self.size * size_of::<DirEntry>(),
+                FileType::Lnk => 0,
+            } as u64,
             blocks: if self.tp == FileType::Reg {
                 self.size.div_ceil(BLK_SZ) as u64
             } else {
