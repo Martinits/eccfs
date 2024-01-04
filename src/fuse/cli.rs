@@ -64,7 +64,6 @@ impl Filesystem for EccFs {
         reply.attr(&DEFAULT_TTL, &meta.into());
     }
 
-    /// Set file attributes.
     fn setattr(
         &mut self,
         _req: &Request<'_>,
@@ -188,10 +187,6 @@ impl Filesystem for EccFs {
         reply.entry(&DEFAULT_TTL, &meta.into(), 0);
     }
 
-    // fn open(&mut self, _req: &Request<'_>, _ino: u64, _flags: i32, reply: ReplyOpen) {
-    //     reply.opened(0, 0);
-    // }
-
     fn read(
         &mut self,
         _req: &Request<'_>,
@@ -240,19 +235,6 @@ impl Filesystem for EccFs {
         reply.ok();
     }
 
-    // fn release(
-    //     &mut self,
-    //     _req: &Request<'_>,
-    //     _ino: u64,
-    //     _fh: u64,
-    //     _flags: i32,
-    //     _lock_owner: Option<u64>,
-    //     _flush: bool,
-    //     reply: ReplyEmpty,
-    // ) {
-    //     reply.ok();
-    // }
-
     fn fsync(&mut self,
         _req: &Request<'_>,
         ino: u64,
@@ -293,17 +275,6 @@ impl Filesystem for EccFs {
 
         reply.ok();
     }
-
-    // fn fsyncdir(
-    //     &mut self,
-    //     _req: &Request<'_>,
-    //     ino: u64,
-    //     fh: u64,
-    //     datasync: bool,
-    //     reply: ReplyEmpty,
-    // ) {
-    //     reply.error(ENOSYS);
-    // }
 
     fn statfs(&mut self, _req: &Request<'_>, _ino: u64, reply: ReplyStatfs) {
         let info = fuse_try!(self.fs.finfo(), reply);
@@ -346,7 +317,6 @@ impl Filesystem for EccFs {
         reply.created(&DEFAULT_TTL, &meta.into(), 0, 0, 0);
     }
 
-    /// Preallocate or deallocate space to a file
     fn fallocate(
         &mut self,
         _req: &Request<'_>,
@@ -375,34 +345,6 @@ impl Filesystem for EccFs {
         fuse_try!(self.fs.fallocate(ino, mode, offset as usize, length as usize), reply);
         reply.ok();
     }
-
-    // fn lseek(
-    //     &mut self,
-    //     _req: &Request<'_>,
-    //     ino: u64,
-    //     fh: u64,
-    //     offset: i64,
-    //     whence: i32,
-    //     reply: ReplyLseek,
-    // ) {
-    //     reply.error(ENOSYS);
-    // }
-
-    // fn copy_file_range(
-    //     &mut self,
-    //     _req: &Request<'_>,
-    //     ino_in: u64,
-    //     _fh_in: u64,
-    //     offset_in: i64,
-    //     ino_out: u64,
-    //     _fh_out: u64,
-    //     offset_out: i64,
-    //     len: u64,
-    //     flags: u32,
-    //     reply: ReplyWrite,
-    // ) {
-    //     reply.error(ENOSYS);
-    // }
 }
 
 fn main() -> FsResult<()> {

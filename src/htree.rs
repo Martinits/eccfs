@@ -261,12 +261,6 @@ pub struct RWHashTree {
     key_gen: KeyGen,
 }
 
-impl Drop for RWHashTree {
-    fn drop(&mut self) {
-        self.cache.abort().unwrap();
-    }
-}
-
 impl RWHashTree {
     pub fn new(
         cache: RWCache,

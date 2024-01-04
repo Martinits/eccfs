@@ -208,64 +208,19 @@ impl ROCacheServer {
 }
 
 
-pub struct RWCache {
-    tx_to_server: Sender<RWCacheReq>,
-    capacity: usize,
-    // server_handle: Option<JoinHandle<()>>,
-}
-
 pub type RWPayLoad = RwLock<Block>;
-struct RWCacheServer {
-    rx: Receiver<RWCacheReq>,
+pub struct RWCache {
     lru: Lru<u64, RWPayLoad>,
     capacity: usize,
-}
-
-enum RWCacheReq {
-    Get {
-        pos: u64,
-        reply: Sender<FsResult<Option<Arc<RWPayLoad>>>>,
-    },
-    InsertGet {
-        pos: u64,
-        blk: Block,
-        reply: Sender<FsResult<(Arc<RWPayLoad>, Option<(u64, Block)>)>>,
-    },
-    MarkDirty {
-        pos: u64,
-    },
-    Flush {
-        reply: Sender<FsResult<Vec<(u64, Block)>>>,
-    },
-    Abort,
 }
 
 impl RWCache {
     pub fn new(
         capacity: usize,
     ) -> Self {
-        let (tx, rx) = mpsc::channel();
-
-        let mut server = RWCacheServer::new(capacity, rx);
-
-        let _handle = thread::spawn(move || {
-            loop {
-                match server.rx.recv() {
-                    Ok(req) => {
-                        if let RWCacheReq::Abort = &req {
-                            break;
-                        }
-                        server.process(req)
-                    },
-                    Err(e) => panic!("Cache server received an error: {:?}", e),
-                }
-            }
-        });
-
         Self {
-            tx_to_server: tx,
+            lru: Lru::new(capacity),
             capacity,
-            // server_handle: Some(handle),
         }
     }
 
@@ -274,99 +229,31 @@ impl RWCache {
     }
 
     pub fn get_blk_try(&mut self, pos: u64) -> FsResult<Option<Arc<RWPayLoad>>> {
-        let (tx, rx) = mpsc::channel();
-        self.tx_to_server.send(RWCacheReq::Get {
-            pos,
-            reply: tx,
-        }).map_err(|_| FsError::ChannelSendError)?;
-
-        let ret = rx.recv().map_err(|_| FsError::ChannelRecvError)??;
-
-        Ok(ret)
+        self.lru.get(&pos)
     }
 
     pub fn insert_and_get(
         &mut self, pos: u64, blk: Block
     ) -> FsResult<(Arc<RWPayLoad>, Option<(u64, Block)>)> {
-        let (tx, rx) = mpsc::channel();
-        self.tx_to_server.send(RWCacheReq::InsertGet {
-            pos,
-            blk,
-            reply: tx,
-        }).map_err(|_| FsError::ChannelSendError)?;
-
-        let ret = rx.recv().map_err(|_| FsError::ChannelRecvError)??;
-
-        Ok(ret)
+        let apay = Arc::new(RwLock::new(blk));
+        self.lru.insert_and_get(pos, &apay).map(
+            |wb| (apay, wb.map(
+                |(k, v)| (k, v.into_inner().unwrap())
+            ))
+        )
     }
 
     pub fn mark_dirty(&mut self, pos: u64) -> FsResult<()> {
-        self.tx_to_server.send(RWCacheReq::MarkDirty {
-            pos,
-        }).map_err(|_| FsError::ChannelSendError)?;
-        Ok(())
+        self.lru.mark_dirty(&pos)
     }
 
     pub fn flush(&mut self) -> FsResult<Vec<(u64, Block)>> {
-        let (tx, rx) = mpsc::channel();
-        self.tx_to_server.send(RWCacheReq::Flush {
-            reply: tx,
-        }).map_err(|_| FsError::ChannelSendError)?;
-
-        let ret = rx.recv().map_err(|_| FsError::ChannelRecvError)??;
-
-        Ok(ret)
-    }
-
-    pub fn abort(&mut self) -> FsResult<()> {
-        self.tx_to_server.send(RWCacheReq::Abort)
-            .map_err(|_| FsError::ChannelSendError)?;
-        Ok(())
-    }
-}
-
-impl RWCacheServer {
-    fn new(
-        capacity: usize,
-        rx: Receiver<RWCacheReq>,
-    ) -> Self {
-        Self {
-            rx,
-            capacity,
-            lru: Lru::new(capacity),
-        }
-    }
-
-    fn process(&mut self, req: RWCacheReq) {
-        match req {
-            RWCacheReq::Get { reply, pos } => {
-                let send = self.lru.get(&pos);
-                reply.send(send).unwrap();
+        self.lru.flush_wb().map(
+            |l| {
+                l.into_iter().map(
+                    |(k, v)| (k, v.into_inner().unwrap())
+                ).collect()
             }
-            RWCacheReq::InsertGet { pos, blk, reply } => {
-                let apay = Arc::new(RwLock::new(blk));
-                let send = self.lru.insert_and_get(pos, &apay).map(
-                    |wb| (apay, wb.map(
-                        |(k, v)| (k, v.into_inner().unwrap())
-                    ))
-                );
-                reply.send(send).unwrap();
-            }
-            RWCacheReq::MarkDirty { pos } => {
-                self.lru.mark_dirty(&pos).unwrap();
-            }
-            RWCacheReq::Flush { reply } => {
-                let send = match self.lru.flush_wb() {
-                    Ok(l) => {
-                        Ok(l.into_iter().map(
-                            |(k, v)| (k, v.into_inner().unwrap())
-                        ).collect())
-                    },
-                    Err(e) => Err(e),
-                };
-                reply.send(send).unwrap();
-            }
-            _ => panic!("RWCacheServer: Unexpected msg"),
-        }
+        )
     }
 }
