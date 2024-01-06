@@ -35,8 +35,8 @@ pub trait FileSystem: Sync + Send {
         Ok(())
     }
 
-    /// destroy this fs,  called before all worklaods are finished for this fs
-    fn destroy(&self) -> FsResult<()> {
+    /// destroy this fs, called before all worklaods are finished for this fs
+    fn destroy(&mut self) -> FsResult<()> {
         Ok(())
     }
 
@@ -51,44 +51,44 @@ pub trait FileSystem: Sync + Send {
     }
 
     /// read content of inode
-    fn iread(&self, _inode: InodeID, _offset: usize, _to: &mut [u8]) -> FsResult<usize> {
+    fn iread(&self, _iid: InodeID, _offset: usize, _to: &mut [u8]) -> FsResult<usize> {
         Err(FsError::Unsupported)
     }
 
     /// write content of inode
-    fn iwrite(&self, _inode: InodeID, _offset: usize, _from: &[u8]) -> FsResult<usize> {
+    fn iwrite(&self, _iid: InodeID, _offset: usize, _from: &[u8]) -> FsResult<usize> {
         Err(FsError::Unsupported)
     }
 
     /// get metadata of inode
-    fn get_meta(&self, _inode: InodeID) -> FsResult<Metadata> {
+    fn get_meta(&self, _iid: InodeID) -> FsResult<Metadata> {
         Err(FsError::Unsupported)
     }
 
     /// set metadata of inode
-    fn set_meta(&self, _inode: InodeID, _set_md: SetMetadata) -> FsResult<()> {
+    fn set_meta(&self, _iid: InodeID, _set_md: SetMetadata) -> FsResult<()> {
         Err(FsError::Unsupported)
     }
 
     /// read symlink only if inode is a SymLink
-    fn iread_link(&self, _inode: InodeID) -> FsResult<String> {
+    fn iread_link(&self, _iid: InodeID) -> FsResult<String> {
         Err(FsError::Unsupported)
     }
 
     /// sync metadata of this inode
-    fn isync_meta(&self, _inode: InodeID) -> FsResult<()> {
+    fn isync_meta(&self, _iid: InodeID) -> FsResult<()> {
         Err(FsError::Unsupported)
     }
 
     /// sync user data of this inode
-    fn isync_data(&self, _inode: InodeID) -> FsResult<()> {
+    fn isync_data(&self, _iid: InodeID) -> FsResult<()> {
         Err(FsError::Unsupported)
     }
 
     /// create inode
     fn create(
         &self,
-        _inode: InodeID,
+        _iid: InodeID,
         _name: &OsStr,
         _ftype: FileType,
         _perm: u16,
@@ -102,29 +102,29 @@ pub trait FileSystem: Sync + Send {
     }
 
     /// remove a link to inode
-    fn unlink(&self, _inode: InodeID, _name: &OsStr) -> FsResult<()> {
+    fn unlink(&self, _iid: InodeID, _name: &OsStr) -> FsResult<()> {
         Err(FsError::Unsupported)
     }
 
     /// create symlink
-    fn symlink(&self, _inode: InodeID, _name: &OsStr, _to: &Path) -> FsResult<InodeID> {
+    fn symlink(&self, _iid: InodeID, _name: &OsStr, _to: &Path) -> FsResult<InodeID> {
         Err(FsError::Unsupported)
     }
 
     /// move `inode/name` to `to/newname`
-    fn rename(&self, _inode: InodeID, _name: &OsStr, _to: InodeID, _newname: &OsStr) -> FsResult<()> {
+    fn rename(&self, _iid: InodeID, _name: &OsStr, _to: InodeID, _newname: &OsStr) -> FsResult<()> {
         Err(FsError::Unsupported)
     }
 
     /// lookup name in inode only if inode is a dir
-    fn lookup(&self, _inode: InodeID, _name: &OsStr) -> FsResult<Option<InodeID>> {
+    fn lookup(&self, _iid: InodeID, _name: &OsStr) -> FsResult<Option<InodeID>> {
         Err(FsError::Unsupported)
     }
 
     /// list all entries in inode only if it's a dir
     fn listdir(
         &self,
-        _inode: InodeID,
+        _iid: InodeID,
         _offset: usize
     ) -> FsResult<Vec<(InodeID, String, FileType)>> {
         Err(FsError::Unsupported)
@@ -133,7 +133,7 @@ pub trait FileSystem: Sync + Send {
     /// fallocate
     fn fallocate(
         &self,
-        _inode: InodeID,
+        _iid: InodeID,
         _mode: FallocateMode,
         _offset: usize,
         _len: usize,
