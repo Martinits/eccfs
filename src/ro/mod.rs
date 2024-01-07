@@ -5,7 +5,7 @@ pub mod builder;
 
 use crate::vfs::*;
 use std::sync::{Arc, RwLock, Mutex};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use crate::*;
 use std::ffi::OsStr;
 use superblock::*;
@@ -208,7 +208,7 @@ impl ROFS {
         }
     }
 
-    fn get_dir_ent_name(&self, de: &DirEntry) -> FsResult<String> {
+    fn get_dir_ent_name(&self, de: &DirEntry) -> FsResult<PathBuf> {
         let DirEntry {len, name, ..} = de;
         let name = if *len as usize > name.len() {
             let pos = u64::from_le_bytes(name[..8].try_into().unwrap());
@@ -227,7 +227,7 @@ impl ROFS {
                 |_| FsError::InvalidData
             )?.into()
         };
-        Ok(name)
+        Ok(name.into())
     }
 
     fn find_de_in_list(
@@ -240,7 +240,7 @@ impl ROFS {
             |de| de.hash == hash
         ) {
             let real_name = self.get_dir_ent_name(de)?;
-            if real_name.as_str() == name {
+            if real_name.as_os_str() == name {
                 return Ok(Some(de.ipos))
             }
         }
@@ -275,7 +275,7 @@ impl FileSystem for ROFS {
         self.get_inode(iid)?.get_meta()
     }
 
-    fn iread_link(&self, iid: InodeID) -> FsResult<String> {
+    fn iread_link(&self, iid: InodeID) -> FsResult<PathBuf> {
         match self.get_inode(iid)?.get_link()? {
             LnkName::Short(s) => Ok(s),
             LnkName::Long(pos, len) => {
@@ -285,7 +285,8 @@ impl FileSystem for ROFS {
                 if read != len {
                     Err(FsError::IncompatibleMetadata)
                 } else {
-                    Ok(String::from_utf8(buf).map_err(|_| FsError::InvalidData)?)
+                    let s = String::from_utf8(buf).map_err(|_| FsError::InvalidData)?;
+                    Ok(s.into())
                 }
             }
         }
@@ -339,7 +340,9 @@ impl FileSystem for ROFS {
         }
     }
 
-    fn listdir(&self, iid: InodeID, offset: usize) -> FsResult<Vec<(InodeID, String, FileType)>> {
+    fn listdir(
+        &self, iid: InodeID, offset: usize
+    ) -> FsResult<Vec<(InodeID, PathBuf, FileType)>> {
         match self.get_inode(iid)?.get_entry_list_info(offset)? {
             Some(DirEntryInfo::External(de_start, num)) => {
                 let mut de_list = vec![DirEntry::default(); num];

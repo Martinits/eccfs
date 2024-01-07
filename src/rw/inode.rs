@@ -34,7 +34,7 @@ enum InodeExt {
     DirInline {
         de_list: Vec<DirEntry>, // include . and ..
     },
-    Lnk(String),
+    Lnk(PathBuf),
 }
 
 pub struct Inode {
@@ -61,8 +61,6 @@ impl Inode {
     pub fn new_from_raw(
         raw: &InodeBytes,
         iid: InodeID,
-        tp: FileType,
-        mode: Option<FSMode>,
     ) -> FsResult<Self> {
         unimplemented!();
     }
@@ -119,7 +117,7 @@ impl Inode {
         Ok(())
     }
 
-    pub fn get_link(&self) -> FsResult<String> {
+    pub fn get_link(&self) -> FsResult<PathBuf> {
         if let InodeExt::Lnk(ref lnk) = self.ext {
             Ok(lnk.clone())
         } else {

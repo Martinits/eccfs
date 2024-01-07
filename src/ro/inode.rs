@@ -22,7 +22,7 @@ pub enum LookUpInfo<'a> {
 
 #[derive(Clone)]
 pub enum LnkName {
-    Short(String),
+    Short(PathBuf),
     Long(u64, usize), // (pos, length)
 }
 

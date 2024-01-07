@@ -1,7 +1,7 @@
 use crate::*;
 use std::ffi::OsStr;
 use std::time::SystemTime;
-use std::path::Path;
+use std::path::{PathBuf, Path};
 use bitflags::bitflags;
 
 /// for ROFS, 16bit block offset + 48bit block position
@@ -71,7 +71,7 @@ pub trait FileSystem: Sync + Send {
     }
 
     /// read symlink only if inode is a SymLink
-    fn iread_link(&self, _iid: InodeID) -> FsResult<String> {
+    fn iread_link(&self, _iid: InodeID) -> FsResult<PathBuf> {
         Err(FsError::Unsupported)
     }
 
@@ -88,7 +88,7 @@ pub trait FileSystem: Sync + Send {
     /// create inode
     fn create(
         &self,
-        _iid: InodeID,
+        _parent: InodeID,
         _name: &OsStr,
         _ftype: FileType,
         _perm: u16,
@@ -126,7 +126,7 @@ pub trait FileSystem: Sync + Send {
         &self,
         _iid: InodeID,
         _offset: usize
-    ) -> FsResult<Vec<(InodeID, String, FileType)>> {
+    ) -> FsResult<Vec<(InodeID, PathBuf, FileType)>> {
         Err(FsError::Unsupported)
     }
 

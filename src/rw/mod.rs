@@ -121,7 +121,12 @@ impl RWFS {
     }
 
     fn fetch_inode(&self, iid: InodeID) -> FsResult<Inode> {
-        unimplemented!();
+        let mut ib = [0u8; INODE_SZ];
+        let read = mutex_lock!(&self.inode_tbl).read_exact(
+            iid_to_htree_logi_pos(iid), &mut ib,
+        )?;
+        assert_eq!(read, INODE_SZ);
+        Inode::new_from_raw(&ib, iid)
     }
 
     fn get_inode(&self, iid: InodeID, dirty: bool) -> FsResult<Arc<RwLock<Inode>>> {
@@ -176,7 +181,11 @@ impl FileSystem for RWFS {
         // write superblock
         let mut sb_blk = rwlock_read!(self.sb).write()?;
         let mode = if self.mode.is_encrypted() {
-            let key = self.key_gen.gen_key(SUPERBLOCK_POS)?;
+            let key = if self.regen_root_key {
+                self.key_gen.gen_key(SUPERBLOCK_POS)?
+            } else {
+                self.mode.get_key().unwrap()
+            };
             let mac = aes_gcm_128_blk_enc(&mut sb_blk, &key, SUPERBLOCK_POS)?;
             FSMode::Encrypted(key, mac)
         } else {
@@ -231,7 +240,7 @@ impl FileSystem for RWFS {
         rwlock_write!(self.get_inode(iid, true)?).set_meta(set_meta)
     }
 
-    fn iread_link(&self, iid: InodeID) -> FsResult<String> {
+    fn iread_link(&self, iid: InodeID) -> FsResult<PathBuf> {
         rwlock_read!(self.get_inode(iid, false)?).get_link()
     }
 
@@ -253,7 +262,7 @@ impl FileSystem for RWFS {
 
     fn create(
         &self,
-        iid: InodeID,
+        parent: InodeID,
         name: &OsStr,
         ftype: FileType,
         perm: u16,
@@ -282,7 +291,9 @@ impl FileSystem for RWFS {
         rwlock_write!(self.get_inode(iid, true)?).lookup(name)
     }
 
-    fn listdir(&self, iid: InodeID, offset: usize) -> FsResult<Vec<(InodeID, String, FileType)>> {
+    fn listdir(
+        &self, iid: InodeID, offset: usize
+    ) -> FsResult<Vec<(InodeID, PathBuf, FileType)>> {
         // TODO:
         unimplemented!();
     }

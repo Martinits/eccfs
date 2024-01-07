@@ -119,7 +119,7 @@ impl Filesystem for EccFs {
 
     fn readlink(&mut self, _req: &Request<'_>, ino: u64, reply: ReplyData) {
         let link_path = fuse_try!(self.fs.iread_link(ino), reply);
-        reply.data(link_path.as_bytes());
+        reply.data(link_path.as_os_str().as_encoded_bytes());
     }
 
     fn mkdir(
