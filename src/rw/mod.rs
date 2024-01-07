@@ -129,6 +129,14 @@ impl RWFS {
         Inode::new_from_raw(&ib, iid)
     }
 
+    fn write_inode(&self, iid: InodeID, inode: Inode) -> FsResult<()> {
+        let ib = inode.destroy()?;
+        mutex_lock!(self.inode_tbl).write_exact(
+            iid_to_htree_logi_pos(iid), &ib
+        )?;
+        Ok(())
+    }
+
     fn get_inode(&self, iid: InodeID, dirty: bool) -> FsResult<Arc<RwLock<Inode>>> {
         let mut icac = mutex_lock!(&self.icac);
         let ainode = if let Some(ainode) = icac.get(iid)? {
@@ -136,13 +144,33 @@ impl RWFS {
         } else {
             // cache miss
             let ainode = Arc::new(RwLock::new(self.fetch_inode(iid)?));
-            icac.insert_and_get(iid, &ainode)?;
+            if let Some((iid, rw_inode)) = icac.insert_and_get(iid, &ainode)? {
+                // write back inode
+                let inode = rw_inode.into_inner().unwrap();
+                self.write_inode(iid, inode)?;
+            }
             ainode
         };
         if dirty {
             icac.mark_dirty(iid)?;
         }
         Ok(ainode)
+    }
+
+    fn insert_inode(&self, iid: InodeID, inode: Inode) -> FsResult<()> {
+        let mut icac = mutex_lock!(&self.icac);
+        let ainode = Arc::new(RwLock::new(inode));
+        if let Some((iid, rw_inode)) = icac.insert_and_get(iid, &ainode)? {
+            // write back inode
+            let inode = rw_inode.into_inner().unwrap();
+            self.write_inode(iid, inode)?;
+        }
+        icac.mark_dirty(iid)?;
+        Ok(())
+    }
+
+    fn remove_inode(&self, iid: InodeID) -> FsResult<()> {
+        Ok(())
     }
 }
 
@@ -265,36 +293,87 @@ impl FileSystem for RWFS {
         parent: InodeID,
         name: &OsStr,
         ftype: FileType,
+        uid: u32,
+        gid: u32,
         perm: u16,
     ) -> FsResult<InodeID> {
-        Err(FsError::Unsupported)
+        let iid = mutex_lock!(self.ibitmap).alloc()?;
+        let inode = Inode::new(iid, ftype, uid, gid, perm & PERM_MASK)?;
+
+        rwlock_write!(self.get_inode(parent, true)?).add_child(name, ftype, iid)?;
+
+        self.insert_inode(iid, inode)?;
+        Ok(iid)
     }
 
-    fn link(&self, newparent: InodeID, newname: &OsStr, linkto: InodeID) -> FsResult<InodeID> {
-        Err(FsError::Unsupported)
+    fn link(&self, parent: InodeID, name: &OsStr, linkto: InodeID) -> FsResult<()> {
+        let to = self.get_inode(linkto, false)?;
+        let mut lock = rwlock_write!(to);
+        lock.nlinks += 1;
+        let tp = lock.tp;
+
+        rwlock_write!(self.get_inode(parent, true)?).add_child(
+            name, tp, linkto,
+        )?;
+        Ok(())
     }
 
-    fn unlink(&self, iid: InodeID, name: &OsStr) -> FsResult<()> {
-        Err(FsError::Unsupported)
+    fn unlink(&self, parent: InodeID, name: &OsStr) -> FsResult<()> {
+        let (iid, _) = rwlock_write!(self.get_inode(parent, true)?).remove_child(name)?;
+        let inode = self.get_inode(iid, false)?;
+        let mut lock = rwlock_write!(inode);
+        if lock.nlinks == 1 {
+            self.remove_inode(iid)?;
+        } else {
+            lock.nlinks -= 1;
+        }
+        Ok(())
     }
 
-    fn symlink(&self, iid: InodeID, name: &OsStr, to: &Path) -> FsResult<InodeID> {
-        Err(FsError::Unsupported)
+    fn symlink(
+        &self,
+        parent: InodeID,
+        name: &OsStr,
+        to: &Path,
+        uid: u32,
+        gid: u32,
+    ) -> FsResult<InodeID> {
+        let iid = mutex_lock!(self.ibitmap).alloc()?;
+        // symlink permissions are always 0777 since on Linux they are not used anyway
+        let mut inode = Inode::new(iid, FileType::Lnk, uid, gid, PERM_MASK)?;
+        inode.set_link(to)?;
+
+        rwlock_write!(self.get_inode(parent, true)?).add_child(name, FileType::Lnk, iid)?;
+
+        self.insert_inode(iid, inode)?;
+        Ok(iid)
     }
 
-    fn rename(&self, iid: InodeID, name: &OsStr, to: InodeID, newname: &OsStr) -> FsResult<()> {
-        Err(FsError::Unsupported)
+    fn rename(
+        &self,
+        from: InodeID, name: &OsStr,
+        to: InodeID, newname: &OsStr
+    ) -> FsResult<()> {
+        let from_inode = self.get_inode(from, true)?;
+        if from == to {
+            rwlock_write!(from_inode).rename_child(name, newname)?;
+        } else {
+            let (iid, tp) = rwlock_write!(from_inode).remove_child(name)?;
+            rwlock_write!(self.get_inode(to, true)?).add_child(newname, tp, iid)?;
+        }
+        Ok(())
     }
 
     fn lookup(&self, iid: InodeID, name: &OsStr) -> FsResult<Option<InodeID>> {
         // Currently we don't use de_cac
-        rwlock_write!(self.get_inode(iid, true)?).lookup(name)
+        // TODO: use read_data
+        unimplemented!();
     }
 
     fn listdir(
         &self, iid: InodeID, offset: usize
     ) -> FsResult<Vec<(InodeID, PathBuf, FileType)>> {
-        // TODO:
+        // TODO: use read_data
         unimplemented!();
     }
 

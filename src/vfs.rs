@@ -91,28 +91,41 @@ pub trait FileSystem: Sync + Send {
         _parent: InodeID,
         _name: &OsStr,
         _ftype: FileType,
+        _uid: u32,
+        _gid: u32,
         _perm: u16,
     ) -> FsResult<InodeID> {
         Err(FsError::Unsupported)
     }
 
     /// create hard link
-    fn link(&self, _newparent: InodeID, _newname: &OsStr, _linkto: InodeID) -> FsResult<InodeID> {
+    fn link(&self, _parent: InodeID, _name: &OsStr, _linkto: InodeID) -> FsResult<()> {
         Err(FsError::Unsupported)
     }
 
     /// remove a link to inode
-    fn unlink(&self, _iid: InodeID, _name: &OsStr) -> FsResult<()> {
+    fn unlink(&self, _parent: InodeID, _name: &OsStr) -> FsResult<()> {
         Err(FsError::Unsupported)
     }
 
     /// create symlink
-    fn symlink(&self, _iid: InodeID, _name: &OsStr, _to: &Path) -> FsResult<InodeID> {
+    fn symlink(
+        &self,
+        _parent: InodeID,
+        _name: &OsStr,
+        _to: &Path,
+        _uid: u32,
+        _gid: u32,
+    ) -> FsResult<InodeID> {
         Err(FsError::Unsupported)
     }
 
     /// move `inode/name` to `to/newname`
-    fn rename(&self, _iid: InodeID, _name: &OsStr, _to: InodeID, _newname: &OsStr) -> FsResult<()> {
+    fn rename(
+        &self,
+        _from: InodeID, _name: &OsStr,
+        _to: InodeID, _newname: &OsStr
+    ) -> FsResult<()> {
         Err(FsError::Unsupported)
     }
 
@@ -194,7 +207,7 @@ bitflags! {
     }
 }
 
-const PERM_MASK: u16 = 0o0777;
+pub const PERM_MASK: u16 = 0o0777;
 
 pub fn get_ftype_from_mode(mode: u16) -> FileType {
     FileType::from(mode >> 12)

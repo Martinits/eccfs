@@ -29,8 +29,8 @@ pub struct DInodeBase {
     pub mtime: u32,
 
     /// file size(regular file)
-    /// dir-entry num(dir), without . and ..
-    /// name length(symbolic link)
+    /// dir-entry data total size (dir)
+    /// name length (symbolic link)
     pub size: u64,
 }
 rw_as_blob!(DInodeBase);

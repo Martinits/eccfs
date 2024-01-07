@@ -39,9 +39,9 @@ enum InodeExt {
 
 pub struct Inode {
     iid: InodeID,
-    tp: FileType,
+    pub tp: FileType,
     perm: FilePerm,
-    nlinks: u16,
+    pub nlinks: u16,
     uid: u32,
     gid: u32,
     atime: SystemTime,
@@ -61,6 +61,16 @@ impl Inode {
     pub fn new_from_raw(
         raw: &InodeBytes,
         iid: InodeID,
+    ) -> FsResult<Self> {
+        unimplemented!();
+    }
+
+    pub fn new(
+        iid: InodeID,
+        tp: FileType,
+        uid: u32,
+        gid: u32,
+        perm: u16, // only last 9 bits conuts
     ) -> FsResult<Self> {
         unimplemented!();
     }
@@ -125,8 +135,27 @@ impl Inode {
         }
     }
 
-    pub fn lookup(&self, name: &OsStr) -> FsResult<Option<InodeID>> {
-        Ok(None)
+    pub fn set_link(&mut self, target: &Path) -> FsResult<()> {
+        if let InodeExt::Lnk(p) = &mut self.ext {
+            *p = target.into();
+            Ok(())
+        } else {
+            Err(FsError::PermissionDenied)
+        }
+    }
+
+    pub fn add_child(&self, name: &OsStr, tp: FileType, iid: InodeID) -> FsResult<()> {
+        // if name exists, return err
+        Ok(())
+    }
+
+    pub fn rename_child(&mut self, name: &OsStr, newname: &OsStr) -> FsResult<()> {
+        // if newname exists, return err
+        Ok(())
+    }
+
+    pub fn remove_child(&self, name: &OsStr) -> FsResult<(InodeID, FileType)> {
+        unimplemented!();
     }
 
     pub fn sync_data(&mut self) -> FsResult<()> {

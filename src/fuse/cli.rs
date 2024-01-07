@@ -124,7 +124,7 @@ impl Filesystem for EccFs {
 
     fn mkdir(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         parent: u64,
         name: &OsStr,
         mode: u32,
@@ -132,7 +132,12 @@ impl Filesystem for EccFs {
         reply: ReplyEntry,
     ) {
         let (_, perm) = fuse_try!(libc_mode_split(mode), reply);
-        let iid = fuse_try!(self.fs.create(parent, name, vfs::FileType::Dir, perm), reply);
+        let uid = req.uid();
+        let gid = req.gid();
+        let iid = fuse_try!(self.fs.create(
+            parent, name, vfs::FileType::Dir,
+            uid, gid, perm
+        ), reply);
         let meta = fuse_try!(self.fs.get_meta(iid), reply);
         reply.entry(&DEFAULT_TTL, &meta.into(), 0);
     }
@@ -149,13 +154,18 @@ impl Filesystem for EccFs {
 
     fn symlink(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         parent: u64,
         link_name: &OsStr,
         target: &Path,
         reply: ReplyEntry,
     ) {
-        let iid = fuse_try!(self.fs.symlink(parent, link_name, target), reply);
+        let uid = req.uid();
+        let gid = req.gid();
+        let iid = fuse_try!(self.fs.symlink(
+            parent, link_name, target,
+            uid, gid,
+        ), reply);
         let meta = fuse_try!(self.fs.get_meta(iid), reply);
         reply.entry(&DEFAULT_TTL, &meta.into(), 0);
     }
@@ -182,8 +192,8 @@ impl Filesystem for EccFs {
         newname: &OsStr,
         reply: ReplyEntry,
     ) {
-        let iid = fuse_try!(self.fs.link(newparent, newname, ino), reply);
-        let meta = fuse_try!(self.fs.get_meta(iid), reply);
+        fuse_try!(self.fs.link(newparent, newname, ino), reply);
+        let meta = fuse_try!(self.fs.get_meta(ino), reply);
         reply.entry(&DEFAULT_TTL, &meta.into(), 0);
     }
 
@@ -303,7 +313,7 @@ impl Filesystem for EccFs {
 
     fn create(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         parent: u64,
         name: &OsStr,
         mode: u32,
@@ -312,7 +322,12 @@ impl Filesystem for EccFs {
         reply: ReplyCreate,
     ) {
         let (tp, perm) = fuse_try!(libc_mode_split(mode), reply);
-        let iid = fuse_try!(self.fs.create(parent, name, tp, perm), reply);
+        let uid = req.uid();
+        let gid = req.gid();
+        let iid = fuse_try!(self.fs.create(
+            parent, name, tp,
+            uid, gid, perm
+        ), reply);
         let meta = fuse_try!(self.fs.get_meta(iid), reply);
         reply.created(&DEFAULT_TTL, &meta.into(), 0, 0, 0);
     }
