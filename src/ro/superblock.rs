@@ -99,7 +99,7 @@ impl Into<SuperBlock> for DSuperBlock {
 }
 
 impl SuperBlock {
-    pub fn new(mut raw_blk: Block) -> FsResult<Self> {
+    pub fn new(raw_blk: Block) -> FsResult<Self> {
         let dsb = unsafe {
             (raw_blk.as_ptr() as *const DSuperBlock).as_ref().ok_or(FsError::UnknownError)?
         };

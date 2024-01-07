@@ -58,7 +58,7 @@ pub const DEFAULT_CACHE_CAP: usize = 256;
 struct ROCacheServer {
     rx: Receiver<ROCacheReq>,
     lru: Lru<u64, Block>,
-    capacity: usize,
+    _capacity: usize,
     backend: Box<dyn ROStorage>,
 }
 
@@ -137,7 +137,7 @@ impl ROCacheServer {
         Self {
             rx,
             backend,
-            capacity,
+            _capacity: capacity,
             lru: Lru::new(capacity),
         }
     }
@@ -207,6 +207,16 @@ impl ROCacheServer {
     }
 }
 
+
+pub fn rw_cache_cap_defaults(htree_len: usize) -> usize {
+    let mut cap = htree_len / 10;
+    if cap < 4 {
+        cap = 4;
+    } else if cap > 32 {
+        cap = 32;
+    }
+    cap
+}
 
 pub type RWPayLoad = RwLock<Block>;
 pub struct RWCache {

@@ -962,6 +962,7 @@ impl HTreeBuilder {
     }
 }
 
+#[cfg(test)]
 mod test {
     #[test]
     fn build() {

@@ -28,8 +28,8 @@ pub enum LnkName {
 
 enum InodeExt {
     Reg {
-        data_start: u64,
-        data_len: u64,
+        _data_start: u64,
+        _data_len: u64,
         data: ROHashTree,
     },
     RegInline {
@@ -101,8 +101,8 @@ impl Inode {
                     };
                     assert!(dinode.data_start + dinode.data_len <= file_sec_len);
                     InodeExt::Reg {
-                        data_start: file_sec_start + dinode.data_start,
-                        data_len: dinode.data_len,
+                        _data_start: file_sec_start + dinode.data_start,
+                        _data_len: dinode.data_len,
                         data: ROHashTree::new(
                             backend, file_sec_start + dinode.data_start, dinode.data_len,
                             FSMode::from_key_entry(dinode.key_entry, encrypted), cache_data,

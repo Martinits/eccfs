@@ -36,8 +36,8 @@ pub trait FileSystem: Sync + Send {
     }
 
     /// destroy this fs, called before all worklaods are finished for this fs
-    fn destroy(&mut self) -> FsResult<()> {
-        Ok(())
+    fn destroy(&mut self) -> FsResult<FSMode> {
+        Err(FsError::Unsupported)
     }
 
     /// get fs stat info in superblock

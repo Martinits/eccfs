@@ -240,9 +240,9 @@ impl ROHashTree {
     }
 
     // flush all blocks including root
-    pub fn flush(&self) -> FsResult<()> {
-        mutex_lock!(self.backend).flush()
-    }
+    // pub fn flush(&self) -> FsResult<()> {
+    //     mutex_lock!(self.backend).flush()
+    // }
 }
 
 // if ke_buf size exceeds 1/ratio of cache size, a flush is needed
@@ -263,14 +263,20 @@ pub struct RWHashTree {
 
 impl RWHashTree {
     pub fn new(
-        cache: RWCache,
+        cache_cap_hint: Option<usize>,
         backend: Box<dyn RWStorage>,
         length: u64,
         root_mode: Option<FSMode>,
         encrypted: bool,
     ) -> Self {
+        if length == 0 {
+            assert!(root_mode.is_none());
+        }
+
         Self {
-            cache,
+            cache: RWCache::new(
+                cache_cap_hint.unwrap_or(rw_cache_cap_defaults(length as usize))
+            ),
             backend,
             length,
             encrypted,
@@ -739,18 +745,18 @@ impl RWHashTree {
     }
 }
 
+#[cfg(test)]
 mod test {
     use crate::*;
     use super::*;
 
     const MODE_PATH: &str = "test/mode";
     fn open_htree(htree_path: &str) -> FsResult<RWHashTree> {
-        use crate::bcache::*;
         use crate::*;
-        use crate::storage::{FileStorage, RWStorage};
+        use crate::storage::FileStorage;
         use super::*;
         use std::path::Path;
-        use std::fs::{self, File, OpenOptions};
+        use std::fs::{self, File};
         use std::io::prelude::*;
 
         let mut len = io_try!(fs::metadata(htree_path)).len();
@@ -789,9 +795,8 @@ mod test {
             Path::new(htree_path),
             true,
         )?;
-        let cache = RWCache::new(10);
         Ok(RWHashTree::new(
-            cache,
+            Some(10),
             Box::new(back),
             len,
             mode,
@@ -800,12 +805,8 @@ mod test {
     }
 
     fn close_htree(mut htree: RWHashTree) -> FsResult<()> {
-        use crate::bcache::*;
-        use crate::*;
-        use crate::storage::{FileStorage, RWStorage};
         use super::*;
-        use std::path::Path;
-        use std::fs::{self, File, OpenOptions};
+        use std::fs::{self, OpenOptions};
         use std::io::prelude::*;
 
         let mode = htree.flush()?;
@@ -840,12 +841,7 @@ mod test {
 
     #[test]
     fn rwhtree() -> FsResult<()> {
-        use crate::bcache::*;
         use crate::*;
-        use crate::storage::{FileStorage, RWStorage};
-        use super::*;
-        use std::path::Path;
-        use std::fs::{self, File, OpenOptions};
         use std::io::prelude::*;
 
         env_logger::builder()

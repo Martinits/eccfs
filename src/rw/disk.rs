@@ -1,5 +1,7 @@
-use crate::rw_as_blob;
+use crate::*;
 
+pub const INODE_SZ: usize = 128;
+pub const INODE_PER_BLK: usize = BLK_SZ / INODE_SZ;
 
 #[repr(C)]
 #[derive(Default)]

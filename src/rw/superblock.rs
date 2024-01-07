@@ -24,12 +24,16 @@ pub struct SuperBlock {
     pub namemax: usize,
     /// ibitmap start, normally 1
     pub ibitmap_start: u64,
+    /// ibitmap len in blk
+    pub ibitmap_len: u64,
+    /// ibitmap blocks ke
+    pub ibitmap_ke: Vec<KeyEntry>,
     /// itbl data file hash name
     pub itbl_name: Hash256,
     /// length of itbl data file including htree contents
     pub itbl_len: u64,
-    /// ibitmap blocks ke
-    pub ibitmap_ke: Vec<KeyEntry>,
+    /// itbl htree key entry
+    pub itbl_ke: KeyEntry,
 }
 
 #[repr(C)]
@@ -46,12 +50,13 @@ pub struct DSuperBlockBase {
     pub ibitmap_len: u64,
     pub itbl_name: Hash256,
     pub itbl_len: u64, // including htree
+    pub itbl_ke: KeyEntry,
     // pub ibitmap_ke: [KeyEntry],
 }
 rw_as_blob!(DSuperBlockBase);
 
 impl SuperBlock {
-    pub fn new(mut raw_blk: Block) -> FsResult<Self> {
+    pub fn new(raw_blk: Block) -> FsResult<Self> {
         let dsb_base = unsafe {
             (raw_blk.as_ptr() as *const DSuperBlockBase).as_ref().ok_or(FsError::UnknownError)?
         };
@@ -78,8 +83,10 @@ impl SuperBlock {
             files: dsb_base.files as usize,
             namemax: dsb_base.namemax as usize,
             ibitmap_start: dsb_base.ibitmap_start,
+            ibitmap_len: dsb_base.ibitmap_len,
             itbl_name: dsb_base.itbl_name,
             itbl_len: dsb_base.itbl_len,
+            itbl_ke: dsb_base.itbl_ke,
             ibitmap_ke,
         })
     }
@@ -89,16 +96,24 @@ impl SuperBlock {
             magic: self.magic,
             bsize: self.bsize,
             blocks: self.blocks,
-            bfree: 0,
-            bavail: 0,
+            bfree: self.get_bfree(),
+            bavail: self.get_bfree(),
             files: self.files,
-            ffree: 0,
+            ffree: usize::MAX - self.files,
             frsize: self.bsize,
             namemax: self.namemax,
         })
     }
 
-    pub fn write(self, raw_blk: &mut Block) -> FsResult<()> {
+    fn get_bfree(&self) -> usize {
+        // because we use htrees, there's no max size of a file or a block group
+        // so we just estimate it
+        self.nr_data_file * 64
+    }
+
+    pub fn write(&self) -> FsResult<Block> {
+        let mut raw_blk = [0u8; BLK_SZ];
+
         let dsb_base = unsafe {
             (raw_blk.as_ptr() as *mut DSuperBlockBase).as_mut().ok_or(FsError::UnknownError)?
         };
@@ -128,6 +143,6 @@ impl SuperBlock {
         ));
         assert_eq!(written, bytes);
 
-        Ok(())
+        Ok(raw_blk)
     }
 }
