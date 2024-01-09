@@ -55,7 +55,11 @@ enum InodeExt {
         data_file_name: PathBuf,
         data: RWHashTree,
     },
-    Lnk(PathBuf),
+    LnkInline(PathBuf),
+    Lnk {
+        lnk_name: PathBuf,
+        data_file_name: PathBuf,
+    },
 }
 
 pub const REG_INLINE_EXPAND_THRESHOLD: usize = BLK_SZ;
@@ -147,7 +151,7 @@ impl Inode {
             mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(di_base.mtime as u64),
             size: di_base.size as usize,
             // just something to hold the place
-            ext: InodeExt::Lnk(PathBuf::new()),
+            ext: InodeExt::LnkInline(PathBuf::new()),
             encrypted,
             fs_path: fs_path.clone(),
         };
@@ -208,37 +212,29 @@ impl Inode {
                 }
             }
             FileType::Lnk => {
-                let lnk_name = if di_base.size <= LNK_INLINE_MAX as u64 {
+                if di_base.size <= LNK_INLINE_MAX as u64 {
                     // inline link name
                     let di = unsafe {
                         &*(raw.as_ptr() as *const DInodeLnkInline)
                     };
-                    PathBuf::from_str(
+                    let lnk_name = PathBuf::from_str(
                         std::str::from_utf8(
                             &di.name[..di.base.size as usize]
                         ).unwrap()
-                    ).unwrap()
+                    ).unwrap();
+                    InodeExt::LnkInline(lnk_name)
                 } else {
                     // single block file
                     let di = unsafe {
                         &*(raw.as_ptr() as *const DInodeLnk)
                     };
                     iid_hash_check(iid, &di.data_file)?;
-                    sha3_256_any_check(
-                        unsafe {
-                            std::slice::from_raw_parts(
-                                &iid as *const InodeID as *const u8,
-                                size_of::<InodeID>(),
-                            )
-                        },
-                        &di.data_file
-                    )?;
 
                     // read data block
                     let mut p = fs_path.clone();
                     let fname = hex::encode_upper(&di.data_file);
                     assert_eq!(fname.len(), DATA_FILE_NAME_LEN);
-                    p.push(fname);
+                    p.push(fname.clone());
                     let mut f = io_try!(File::open(p));
                     let mut blk = [0u8; BLK_SZ];
                     io_try!(f.read_exact(&mut blk));
@@ -250,13 +246,16 @@ impl Inode {
                             LNK_DATA_FILE_BLK_POS,
                         )
                     )?;
-                    PathBuf::from_str(
+                    let lnk_name = PathBuf::from_str(
                         std::str::from_utf8(
                             &blk[..di.base.size as usize]
                         ).unwrap()
-                    ).unwrap()
-                };
-                InodeExt::Lnk(lnk_name)
+                    ).unwrap();
+                    InodeExt::Lnk {
+                        lnk_name,
+                        data_file_name: fname.into(),
+                    }
+                }
             }
         };
         Ok(ret)
@@ -297,7 +296,7 @@ impl Inode {
                         )
                     }
                 }
-                FileType::Lnk => InodeExt::Lnk(PathBuf::new()),
+                FileType::Lnk => InodeExt::LnkInline(PathBuf::new()),
             },
             encrypted,
             fs_path: fs_path.clone(),
@@ -434,20 +433,20 @@ impl Inode {
     }
 
     pub fn get_link(&self) -> FsResult<PathBuf> {
-        if let InodeExt::Lnk(lnk) = &self.ext {
-            Ok(lnk.clone())
-        } else {
-            Err(FsError::PermissionDenied)
+        match &self.ext {
+            InodeExt::LnkInline(lnk) => Ok(lnk.clone()),
+            InodeExt::Lnk { lnk_name, .. } => Ok(lnk_name.clone()),
+            _ => Err(FsError::PermissionDenied),
         }
     }
 
     pub fn set_link(&mut self, target: &Path) -> FsResult<()> {
-        if let InodeExt::Lnk(p) = &mut self.ext {
-            *p = target.into();
-            Ok(())
-        } else {
-            Err(FsError::PermissionDenied)
+        match &mut self.ext {
+            InodeExt::LnkInline(lnk) => *lnk = target.into(),
+            InodeExt::Lnk { lnk_name, .. } => *lnk_name = target.into(),
+            _ => return Err(FsError::PermissionDenied),
         }
+        Ok(())
     }
 
     pub fn read_child(&mut self, offset: usize, num: usize) -> FsResult<Vec<DirEntry>> {
@@ -587,8 +586,16 @@ impl Inode {
         unimplemented!();
     }
 
-    pub fn remove_data_file(&self) -> FsResult<()> {
-        // remove data file
-        unimplemented!();
+    pub fn remove_data_file(self) -> FsResult<()> {
+        let df_name = match self.ext {
+            InodeExt::Reg { data_file_name, .. } => data_file_name,
+            InodeExt::Dir { data_file_name, .. } => data_file_name,
+            InodeExt::Lnk { data_file_name, .. } => data_file_name,
+            _ => return Ok(()),
+        };
+        let mut p = self.fs_path;
+        p.push(df_name);
+        io_try!(fs::remove_file(p));
+        Ok(())
     }
 }
