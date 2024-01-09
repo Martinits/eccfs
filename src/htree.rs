@@ -286,6 +286,10 @@ impl RWHashTree {
         }
     }
 
+    pub fn get_cur_mode(&self) -> FSMode {
+        self.root_mode.clone()
+    }
+
     pub fn resize(&mut self, nr_blk: u64) -> FsResult<()> {
         let htree_phy_nr_blk = mht::get_phy_nr_blk(nr_blk);
         // if the htree is cut, there should be invalid ke that points to somewhere over length

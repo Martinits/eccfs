@@ -232,7 +232,7 @@ pub fn get_perm_from_mode(mode: u16) -> FilePerm {
     FilePerm::from_bits(mode & PERM_MASK).unwrap()
 }
 
-pub fn get_mode(tp: FileType, perm: FilePerm) -> u16 {
+pub fn get_mode(tp: FileType, perm: &FilePerm) -> u16 {
     (Into::<u16>::into(tp) << 12) | (perm.bits() & PERM_MASK)
 }
 

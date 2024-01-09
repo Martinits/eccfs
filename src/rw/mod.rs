@@ -284,7 +284,7 @@ impl FileSystem for RWFS {
     fn isync_meta(&self, iid: InodeID) -> FsResult<()> {
         let mut icac = mutex_lock!(&self.icac);
         if let Some(ainode) = icac.get(iid)? {
-            let ib = rwlock_read!(ainode).sync_meta()?;
+            let ib = rwlock_write!(ainode).sync_meta()?;
             mutex_lock!(self.inode_tbl).write_exact(
                 iid_to_htree_logi_pos(iid), &ib
             )?;
