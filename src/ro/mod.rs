@@ -341,9 +341,9 @@ impl FileSystem for ROFS {
     }
 
     fn listdir(
-        &self, iid: InodeID, offset: usize
+        &self, iid: InodeID, offset: usize, num: usize,
     ) -> FsResult<Vec<(InodeID, PathBuf, FileType)>> {
-        match self.get_inode(iid)?.get_entry_list_info(offset)? {
+        match self.get_inode(iid)?.get_entry_list_info(offset, num)? {
             Some(DirEntryInfo::External(de_start, num)) => {
                 let mut de_list = vec![DirEntry::default(); num];
                 let to = unsafe {

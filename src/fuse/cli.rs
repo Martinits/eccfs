@@ -264,21 +264,26 @@ impl Filesystem for EccFs {
         _req: &Request<'_>,
         ino: u64,
         _fh: u64,
-        offset: i64,
+        mut offset: i64,
         mut reply: ReplyDirectory,
     ) {
         assert!(offset >= 0);
 
-        let entries = fuse_try!(self.fs.listdir(ino, offset as usize), reply);
-
-        for (idx, (iid, name, ft)) in entries.into_iter().enumerate() {
-            if reply.add(
-                iid,
-                offset + idx as i64 + 1,
-                ft.into(),
-                OsString::from(name),
-            ) {
-                debug!("Buffer full");
+        loop {
+            if let Some((iid, name, ft)) = fuse_try!(self.fs.next_entry(
+                ino, offset as usize
+            ), reply) {
+                offset += 1;
+                if reply.add(
+                    iid,
+                    offset,
+                    ft.into(),
+                    OsString::from(name),
+                ) {
+                    debug!("Buffer full");
+                    break;
+                }
+            } else {
                 break;
             }
         }

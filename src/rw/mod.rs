@@ -371,7 +371,7 @@ impl FileSystem for RWFS {
     }
 
     fn listdir(
-        &self, iid: InodeID, offset: usize
+        &self, iid: InodeID, offset: usize, num: usize,
     ) -> FsResult<Vec<(InodeID, PathBuf, FileType)>> {
         // TODO: use read_data
         unimplemented!();

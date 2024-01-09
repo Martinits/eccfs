@@ -138,9 +138,24 @@ pub trait FileSystem: Sync + Send {
     fn listdir(
         &self,
         _iid: InodeID,
-        _offset: usize
+        _offset: usize,
+        _num: usize,
     ) -> FsResult<Vec<(InodeID, PathBuf, FileType)>> {
         Err(FsError::Unsupported)
+    }
+
+    fn next_entry(
+        &self,
+        iid: InodeID,
+        offset: usize,
+    ) -> FsResult<Option<(InodeID, PathBuf, FileType)>> {
+        let l = self.listdir(iid, offset, 1)?;
+        if l.len() == 0 {
+            Ok(None)
+        } else {
+            assert_eq!(l.len(), 1);
+            Ok(Some(l[0].clone()))
+        }
     }
 
     /// fallocate
