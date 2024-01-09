@@ -2,7 +2,7 @@ use crate::*;
 use crate::vfs::*;
 use super::disk::*;
 use std::time::{SystemTime, Duration};
-use std::mem::size_of;
+use std::mem::{size_of, size_of_val};
 use crate::htree::*;
 use std::ffi::OsStr;
 use crate::crypto::half_md4;
@@ -15,6 +15,34 @@ pub struct DirEntry {
     pub ipos: u64,
     pub tp: FileType,
     pub name: String,
+}
+
+impl Into<DiskDirEntry> for DirEntry {
+    fn into(self) -> DiskDirEntry {
+        assert!(self.name.len() <= DIRENT_NAME_MAX);
+
+        let mut name = [0u8; DIRENT_NAME_MAX];
+        name[..self.name.len()].copy_from_slice(self.name.as_bytes());
+
+        DiskDirEntry {
+            ipos: self.ipos,
+            tp: self.tp.into(),
+            len: self.name.len() as u16,
+            name,
+        }
+    }
+}
+
+impl From<DiskDirEntry> for DirEntry {
+    fn from(value: DiskDirEntry) -> Self {
+        Self {
+            ipos: value.ipos,
+            tp: value.tp.into(),
+            name: String::from(std::str::from_utf8(
+                &value.name[..value.len as usize]
+            ).unwrap())
+        }
+    }
 }
 
 enum InodeExt {
@@ -406,7 +434,7 @@ impl Inode {
     }
 
     pub fn get_link(&self) -> FsResult<PathBuf> {
-        if let InodeExt::Lnk(ref lnk) = self.ext {
+        if let InodeExt::Lnk(lnk) = &self.ext {
             Ok(lnk.clone())
         } else {
             Err(FsError::PermissionDenied)
@@ -423,25 +451,121 @@ impl Inode {
     }
 
     pub fn read_child(&mut self, offset: usize, num: usize) -> FsResult<Vec<DirEntry>> {
-        unimplemented!();
+        match &mut self.ext {
+            InodeExt::Dir { data, .. } => {
+                let de_list: Vec<DiskDirEntry> = Vec::with_capacity(num);
+                let len = num * DIRENT_SZ;
+                let read = data.read_exact(
+                    offset * DIRENT_SZ,
+                    unsafe {
+                        std::slice::from_raw_parts_mut(
+                            de_list.as_ptr() as *mut u8,
+                            len,
+                        )
+                    }
+                )?;
+                assert_eq!(len, read);
+                Ok(de_list.into_iter().map(
+                    |de| de.into()
+                ).collect())
+            }
+            _ => Err(FsError::PermissionDenied),
+        }
     }
 
     pub fn find_child(&mut self, name: &OsStr) -> FsResult<Option<InodeID>> {
-        unimplemented!();
+        let mut done = 0;
+        while done < self.size {
+            // try read a block of de
+            let round = DIRENT_PER_BLK.min(self.size - done);
+            for de in self.read_child(done, round)? {
+                if de.name.as_str() == name {
+                    return Ok(Some(de.ipos));
+                }
+            }
+            done += round;
+        }
+        Ok(None)
+    }
+
+    fn find_child_pos(&mut self, name: &OsStr) -> FsResult<Option<(usize, DirEntry)>> {
+        let mut done = 0;
+        while done < self.size {
+            // try read a block of de
+            let round = DIRENT_PER_BLK.min(self.size - done);
+            for (i, de) in self.read_child(done, round)?.into_iter().enumerate() {
+                if de.name.as_str() == name {
+                    return Ok(Some((done + i, de)));
+                }
+            }
+            done += round;
+        }
+        Ok(None)
     }
 
     pub fn add_child(&mut self, name: &OsStr, tp: FileType, iid: InodeID) -> FsResult<()> {
-        // if name exists, return err
-        Ok(())
+        if self.find_child(name)?.is_some() {
+            return Err(FsError::AlreadyExists);
+        }
+
+        match &mut self.ext {
+            InodeExt::Dir { data, .. } => {
+                let dde: DiskDirEntry = DirEntry {
+                    ipos: iid,
+                    tp: tp.into(),
+                    name: String::from(name.to_str().unwrap()),
+                }.into();
+                let written = data.write_exact(self.size * DIRENT_SZ, dde.as_ref())?;
+                assert_eq!(written, size_of_val(&dde));
+                self.size += 1;
+                Ok(())
+            }
+            _ => Err(FsError::PermissionDenied),
+        }
     }
 
     pub fn rename_child(&mut self, name: &OsStr, newname: &OsStr) -> FsResult<()> {
-        // if newname exists, return err
-        Ok(())
+        if self.find_child(newname)?.is_some() {
+            return Err(FsError::AlreadyExists);
+        }
+
+        if let Some((pos, mut de)) = self.find_child_pos(name)? {
+            match &mut self.ext {
+                InodeExt::Dir { data, .. } => {
+                    de.name = String::from(newname.to_str().unwrap());
+                    let dde: DiskDirEntry = de.into();
+                    let written = data.write_exact(pos * DIRENT_SZ, dde.as_ref())?;
+                    assert_eq!(written, DIRENT_SZ);
+                    Ok(())
+                }
+                _ => Err(FsError::PermissionDenied),
+            }
+        } else {
+            Err(FsError::NotFound)
+        }
     }
 
     pub fn remove_child(&mut self, name: &OsStr) -> FsResult<(InodeID, FileType)> {
-        unimplemented!();
+        if let Some((pos, de)) = self.find_child_pos(name)? {
+            if let InodeExt::Dir { data, .. } = &mut self.ext {
+                if pos != self.size - 1 {
+                    // read last dde
+                    let mut last_dde = [0u8; DIRENT_SZ];
+                    let read = data.read_exact((self.size - 1) * DIRENT_SZ, &mut last_dde)?;
+                    assert_eq!(read, DIRENT_SZ);
+
+                    // write last dde to the removed place
+                    let written = data.write_exact(pos * DIRENT_SZ, last_dde.as_ref())?;
+                    assert_eq!(written, DIRENT_SZ);
+                }
+                self.size -= 1;
+                Ok((de.ipos, de.tp))
+            } else {
+                Err(FsError::PermissionDenied)
+            }
+        } else {
+            Err(FsError::NotFound)
+        }
     }
 
     pub fn fallocate(&mut self, mode: FallocateMode, offset: usize, len: usize) -> FsResult<()> {

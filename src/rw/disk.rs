@@ -68,6 +68,7 @@ pub struct DInodeRegInline {
 rw_as_blob!(DInodeRegInline);
 
 pub const DIRENT_SZ: usize = 256;
+pub const DIRENT_PER_BLK: usize = BLK_SZ / DIRENT_SZ;
 pub const DIRENT_NAME_MAX: usize = DIRENT_SZ - 12;
 
 #[repr(C)]
