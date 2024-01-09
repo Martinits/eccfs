@@ -353,13 +353,13 @@ impl Filesystem for EccFs {
         assert!(offset >= 0);
         assert!(length >= 0);
 
-        const LIBC_ZERO_KEEP_SZ: i32 = libc::FALLOC_FL_ZERO_RANGE | libc::FALLOC_FL_KEEP_SIZE;
+        // const LIBC_ZERO_KEEP_SZ: i32 = libc::FALLOC_FL_ZERO_RANGE | libc::FALLOC_FL_KEEP_SIZE;
         let mode = match mode {
             0 => FallocateMode::Alloc,
-            libc::FALLOC_FL_KEEP_SIZE => FallocateMode::AllocKeepSize,
+            // libc::FALLOC_FL_KEEP_SIZE => FallocateMode::AllocKeepSize,
             libc::FALLOC_FL_ZERO_RANGE => FallocateMode::ZeroRange,
-            LIBC_ZERO_KEEP_SZ =>
-                FallocateMode::ZeroRangeKeepSize,
+            // LIBC_ZERO_KEEP_SZ =>
+            //     FallocateMode::ZeroRangeKeepSize,
             _ => {
                 reply.error(libc::ENOSYS);
                 return;

@@ -601,9 +601,33 @@ impl Inode {
     }
 
     pub fn fallocate(&mut self, mode: FallocateMode, offset: usize, len: usize) -> FsResult<()> {
-        // use htree pad_to
-        // htree new method: zero_range
-        unimplemented!();
+        let end = offset + len;
+        self.possible_expand_to_htree(end)?;
+
+        if let FallocateMode::Alloc = mode {
+            match &mut self.ext {
+                InodeExt::Reg { data, .. } => {
+                    data.resize(end.div_ceil(BLK_SZ) as u64)?;
+                }
+                InodeExt::RegInline(d) => {
+                    d.resize(end, 0);
+                }
+                _ => return Err(FsError::PermissionDenied),
+            }
+        } else {
+            // zero range
+            match &mut self.ext {
+                InodeExt::Reg { data, .. } => {
+                    data.zero_range(offset, len)?;
+                }
+                InodeExt::RegInline(d) => {
+                    d[offset..end].fill(0);
+                }
+                _ => return Err(FsError::PermissionDenied),
+            }
+        }
+        self.size = self.size.min(end);
+        Ok(())
     }
 
     fn write_lnk_file(f: &Path, lnk_name: &Path, encrypted: Option<Key128>) -> FsResult<FSMode> {

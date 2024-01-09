@@ -313,9 +313,9 @@ pub enum SetMetadata {
 #[derive(Debug)]
 pub enum FallocateMode {
     Alloc,
-    AllocKeepSize,
+    // AllocKeepSize,
     ZeroRange,
-    ZeroRangeKeepSize,
+    // ZeroRangeKeepSize,
 }
 
 pub fn check_access(

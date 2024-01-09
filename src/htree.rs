@@ -339,6 +339,50 @@ impl RWHashTree {
         Ok(())
     }
 
+    pub fn zero_range(&mut self, offset: usize, len: usize) -> FsResult<()> {
+        let org_len = blk2byte!(self.length) as usize;
+
+        let end = (offset + len).div_ceil(BLK_SZ);
+        self.resize(end.div_ceil(BLK_SZ) as u64)?;
+
+        if offset >= org_len {
+            return Ok(())
+        }
+
+        let end = end.min(org_len);
+
+        let start = { // in blocks
+            if offset % BLK_SZ != 0 {
+                let len = BLK_SZ - offset % BLK_SZ;
+                assert_eq!(self.write_exact(offset, &vec![0u8; len])?, len);
+            }
+            mht::get_phy_nr_blk(offset.div_ceil(BLK_SZ) as u64)
+        };
+        let end = { // in blocks
+            if end % BLK_SZ != 0 {
+                let len = end % BLK_SZ;
+                assert_eq!(self.write_exact(end - len, &vec![0u8; len])?, len);
+            }
+            mht::get_phy_nr_blk((end / BLK_SZ) as u64)
+        };
+
+
+        // now zero blocks in (start..end) which is not newly padded
+        for pos in start..end {
+            if !mht::is_idx(pos) {
+                if let Some(apay) = self.cache.get_blk_try(pos)? {
+                    rwlock_write!(apay).fill(0);
+                } else {
+                    self.write_back(pos, [0u8; BLK_SZ])?;
+                }
+            }
+        }
+
+        self.possible_flush_ke_buf()?;
+
+        Ok(())
+    }
+
     // pos is by block
     pub fn get_blk(&mut self, pos: u64, write: bool) -> FsResult<Option<Arc<RWPayLoad>>> {
         if pos >= self.length {
@@ -434,11 +478,7 @@ impl RWHashTree {
     fn write_back(&mut self, pos: u64, mut blk: Block) -> FsResult<()> {
         self.possible_ke_wb(pos, &mut blk)?;
 
-        let mode = if self.encrypted {
-            self.backend_write(pos, blk)?
-        } else {
-            self.backend_write(pos, blk)?
-        };
+        let mode = self.backend_write(pos, blk)?;
 
         // if is root, just modify in struct
         if pos == HTREE_ROOT_BLK_PHY_POS {
