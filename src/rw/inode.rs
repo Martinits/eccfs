@@ -4,7 +4,6 @@ use super::disk::*;
 use std::time::{SystemTime, Duration};
 use std::mem::size_of;
 use crate::htree::*;
-use crate::bcache::*;
 use std::ffi::OsStr;
 use crate::crypto::half_md4;
 use super::*;
@@ -123,6 +122,29 @@ impl Inode {
     }
 
     pub fn set_meta(&mut self, set_meta: SetMetadata) -> FsResult<()> {
+        match set_meta {
+            SetMetadata::Size(sz) => {
+                match &mut self.ext {
+                    InodeExt::RegInline { data } => {
+
+                    }
+                    InodeExt::Reg { data, .. } => {
+                        data.pad_to(sz.div_ceil(BLK_SZ as u64))?;
+                    }
+                    _ => return Err(FsError::PermissionDenied),
+                }
+                self.size = sz as usize;
+            }
+            SetMetadata::Atime(t) => self.atime = t,
+            SetMetadata::Ctime(t) => self.ctime = t,
+            SetMetadata::Mtime(t) => self.mtime = t,
+            SetMetadata::Type(_) => return Err(FsError::PermissionDenied),
+            SetMetadata::Permission(perm) => {
+                self.perm = FilePerm::from_bits(perm).unwrap();
+            }
+            SetMetadata::Uid(uid) => self.uid = uid,
+            SetMetadata::Gid(gid) => self.gid = gid,
+        }
         Ok(())
     }
 

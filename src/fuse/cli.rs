@@ -82,36 +82,39 @@ impl Filesystem for EccFs {
         _flags: Option<u32>,
         reply: ReplyAttr,
     ) {
+        let mut set_list = Vec::new();
         if let Some(mode) = mode {
-            let (tp, perm) = fuse_try!(libc_mode_split(mode), reply);
-            fuse_try!(self.fs.set_meta(ino, SetMetadata::Type(tp)), reply);
-            fuse_try!(self.fs.set_meta(ino, SetMetadata::Permission(perm)), reply);
+            let (_, perm) = fuse_try!(libc_mode_split(mode), reply);
+            set_list.push(SetMetadata::Permission(perm));
         }
         if let Some(uid) = uid {
-            fuse_try!(self.fs.set_meta(ino, SetMetadata::Uid(uid)), reply);
+            set_list.push(SetMetadata::Uid(uid));
         }
         if let Some(gid) = gid {
-            fuse_try!(self.fs.set_meta(ino, SetMetadata::Gid(gid)), reply);
+            set_list.push(SetMetadata::Gid(gid));
         }
         if let Some(sz) = size {
-            fuse_try!(self.fs.set_meta(ino, SetMetadata::Size(sz)), reply);
+            set_list.push(SetMetadata::Size(sz));
         }
         if let Some(atime) = atime {
             let atime = match atime {
                 TimeOrNow::SpecificTime(systime) => systime,
                 TimeOrNow::Now => SystemTime::now(),
             };
-            fuse_try!(self.fs.set_meta(ino, SetMetadata::Atime(atime)), reply);
+            set_list.push(SetMetadata::Atime(atime));
         }
         if let Some(mtime) = mtime {
             let mtime = match mtime {
                 TimeOrNow::SpecificTime(systime) => systime,
                 TimeOrNow::Now => SystemTime::now(),
             };
-            fuse_try!(self.fs.set_meta(ino, SetMetadata::Mtime(mtime)), reply);
+            set_list.push(SetMetadata::Mtime(mtime));
         }
         if let Some(ctime) = ctime {
-            fuse_try!(self.fs.set_meta(ino, SetMetadata::Ctime(ctime)), reply);
+            set_list.push(SetMetadata::Ctime(ctime));
+        }
+        for set_md in set_list {
+            fuse_try!(self.fs.set_meta(ino, set_md), reply);
         }
         let meta = fuse_try!(self.fs.get_meta(ino), reply);
         reply.attr(&DEFAULT_TTL, &meta.into());
