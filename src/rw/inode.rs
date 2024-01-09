@@ -7,7 +7,9 @@ use crate::htree::*;
 use std::ffi::OsStr;
 use crate::crypto::half_md4;
 use super::*;
-
+use std::str::FromStr;
+use std::fs::{File, OpenOptions};
+use std::io::prelude::*;
 
 pub struct DirEntry {
     pub ipos: u64,
@@ -17,20 +19,13 @@ pub struct DirEntry {
 
 enum InodeExt {
     Reg {
-        data_file_name: KeyEntry,
-        data_len: u64,
+        data_file_name: PathBuf,
         data: RWHashTree,
     },
-    RegInline {
-        data: Vec<u8>,
-    },
+    RegInline(Vec<u8>),
     Dir {
-        data_file_name: KeyEntry,
-        data_len: u64,
+        data_file_name: PathBuf,
         data: RWHashTree,
-    },
-    DirInline {
-        de_list: Vec<DirEntry>, // include . and ..
     },
     Lnk(PathBuf),
 }
@@ -55,12 +50,182 @@ pub fn iid_to_htree_logi_pos(iid: InodeID) -> usize {
     iid as usize * INODE_SZ
 }
 
+fn iid_hash(iid: InodeID) -> FsResult<Hash256> {
+    sha3_256_any(
+        unsafe {
+            std::slice::from_raw_parts(
+                &iid as *const InodeID as *const u8,
+                size_of::<InodeID>(),
+            )
+        },
+    )
+}
+
+fn iid_hash_check(iid: InodeID, exp_hash: &Hash256) -> FsResult<()> {
+    sha3_256_any_check(
+        unsafe {
+            std::slice::from_raw_parts(
+                &iid as *const InodeID as *const u8,
+                size_of::<InodeID>(),
+            )
+        },
+        exp_hash
+    )
+}
+
+fn new_data_file(mut dir: PathBuf, iid : InodeID) -> FsResult<(PathBuf, Box<dyn RWStorage>)> {
+    let hash = iid_hash(iid)?;
+    let fname = hex::encode_upper(hash);
+    assert_eq!(fname.len(), DATA_FILE_NAME_LEN);
+    dir.push(fname.clone());
+
+    {
+        // try create new file
+        let _ = io_try!(OpenOptions::new()
+                            .create_new(true)
+                            .read(true)
+                            .write(true)
+                            .open(&dir)
+        );
+    }
+
+    Ok((fname.into(), Box::new(FileStorage::new(&dir, true)?)))
+}
+
 impl Inode {
     pub fn new_from_raw(
         raw: &InodeBytes,
         iid: InodeID,
+        fs_path: &PathBuf,
+        encrypted: bool,
     ) -> FsResult<Self> {
-        unimplemented!();
+        let di_base = unsafe {
+            &*(raw.as_ptr() as *const DInodeBase)
+        };
+        let tp = get_ftype_from_mode(di_base.mode);
+        let mut ret = Self {
+            iid,
+            tp,
+            perm: get_perm_from_mode(di_base.mode),
+            nlinks: di_base.nlinks,
+            uid: di_base.uid,
+            gid: di_base.gid,
+            atime: SystemTime::UNIX_EPOCH + Duration::from_secs(di_base.atime as u64),
+            ctime: SystemTime::UNIX_EPOCH + Duration::from_secs(di_base.ctime as u64),
+            mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(di_base.mtime as u64),
+            size: di_base.size as usize,
+            // just something to hold the place
+            ext: InodeExt::Lnk(PathBuf::new()),
+        };
+
+        ret.ext = match tp {
+            FileType::Reg => {
+                if di_base.size <= REG_INLINE_DATA_MAX as u64 {
+                    // inline data
+                    let di = unsafe {
+                        &*(raw.as_ptr() as *const DInodeRegInline)
+                    };
+                    let d = Vec::from(
+                        &di.data[..di_base.size as usize]
+                    );
+                    InodeExt::RegInline(d)
+                } else {
+                    // htree data
+                    let di = unsafe {
+                        &*(raw.as_ptr() as *const DInodeReg)
+                    };
+                    iid_hash_check(iid, &di.data_file)?;
+                    let mut p = fs_path.clone();
+                    let fname = hex::encode_upper(&di.data_file);
+                    assert_eq!(fname.len(), DATA_FILE_NAME_LEN);
+                    p.push(fname.clone());
+                    let back = FileStorage::new(&p, true)?;
+                    InodeExt::Reg {
+                        data_file_name: fname.into(),
+                        data: RWHashTree::new(
+                            None,
+                            Box::new(back),
+                            di.base.size.div_ceil(BLK_SZ as u64),
+                            Some(FSMode::from_key_entry(di.data_file_ke.clone(), encrypted)),
+                            encrypted,
+                        )
+                    }
+                }
+            }
+            FileType::Dir => {
+                let di = unsafe {
+                    &*(raw.as_ptr() as *const DInodeDir)
+                };
+                iid_hash_check(iid, &di.data_file)?;
+                let mut p = fs_path.clone();
+                let fname = hex::encode_upper(&di.data_file);
+                assert_eq!(fname.len(), DATA_FILE_NAME_LEN);
+                p.push(fname.clone());
+                let back = FileStorage::new(&p, true)?;
+                InodeExt::Dir {
+                    data_file_name: fname.into(),
+                    data: RWHashTree::new(
+                        None,
+                        Box::new(back),
+                        di.base.size.div_ceil(BLK_SZ as u64),
+                        Some(FSMode::from_key_entry(di.data_file_ke.clone(), encrypted)),
+                        encrypted,
+                    )
+                }
+            }
+            FileType::Lnk => {
+                let lnk_name = if di_base.size <= LNK_INLINE_MAX as u64 {
+                    // inline link name
+                    let di = unsafe {
+                        &*(raw.as_ptr() as *const DInodeLnkInline)
+                    };
+                    PathBuf::from_str(
+                        std::str::from_utf8(
+                            &di.name[..di.base.size as usize]
+                        ).unwrap()
+                    ).unwrap()
+                } else {
+                    // single block file
+                    let di = unsafe {
+                        &*(raw.as_ptr() as *const DInodeLnk)
+                    };
+                    iid_hash_check(iid, &di.data_file)?;
+                    sha3_256_any_check(
+                        unsafe {
+                            std::slice::from_raw_parts(
+                                &iid as *const InodeID as *const u8,
+                                size_of::<InodeID>(),
+                            )
+                        },
+                        &di.data_file
+                    )?;
+
+                    // read data block
+                    let mut p = fs_path.clone();
+                    let fname = hex::encode_upper(&di.data_file);
+                    assert_eq!(fname.len(), DATA_FILE_NAME_LEN);
+                    p.push(fname);
+                    let mut f = io_try!(File::open(p));
+                    let mut blk = [0u8; BLK_SZ];
+                    io_try!(f.read_exact(&mut blk));
+                    crypto_in(
+                        &mut blk,
+                        CryptoHint::from_key_entry(
+                            di.name_file_ke.clone(),
+                            encrypted,
+                            LNK_DATA_FILE_BLK_POS,
+                        )
+                    )?;
+                    PathBuf::from_str(
+                        std::str::from_utf8(
+                            &blk[..di.base.size as usize]
+                        ).unwrap()
+                    ).unwrap()
+                };
+                InodeExt::Lnk(lnk_name)
+            }
+        };
+        Ok(ret)
     }
 
     pub fn new(
@@ -69,8 +234,38 @@ impl Inode {
         uid: u32,
         gid: u32,
         perm: u16, // only last 9 bits conuts
+        fs_path: &PathBuf,
+        encrypted: bool,
     ) -> FsResult<Self> {
-        unimplemented!();
+        Ok(Self {
+            iid,
+            tp,
+            perm: FilePerm::from_bits(perm).unwrap(),
+            nlinks: 1,
+            uid,
+            gid,
+            atime: SystemTime::now(),
+            ctime: SystemTime::now(),
+            mtime: SystemTime::now(),
+            size: 0,
+            ext: match tp {
+                FileType::Reg => InodeExt::RegInline(Vec::new()),
+                FileType::Dir => {
+                    let (data_file_name, backend) = new_data_file(fs_path.clone(), iid)?;
+                    InodeExt::Dir {
+                        data_file_name,
+                        data: RWHashTree::new(
+                            None,
+                            backend,
+                            0,
+                            None,
+                            encrypted,
+                        )
+                    }
+                }
+                FileType::Lnk => InodeExt::Lnk(PathBuf::new()),
+            }
+        })
     }
 
     pub fn read_data(&mut self, offset: usize, to: &mut [u8]) -> FsResult<usize> {
@@ -83,7 +278,7 @@ impl Inode {
                     let read = data.read_exact(offset, &mut to[..readable])?;
                     Ok(read)
                 }
-                InodeExt::RegInline { data } => {
+                InodeExt::RegInline(data) => {
                     assert!(data.len() == self.size);
                     to[..readable].copy_from_slice(&data[offset..offset+readable]);
                     Ok(readable)
@@ -95,6 +290,25 @@ impl Inode {
 
     pub fn write_data(&mut self, offset: usize, from: &[u8]) -> FsResult<usize> {
         Ok(0)
+    }
+
+    fn set_file_len(&mut self, new_sz: usize) -> FsResult<()> {
+        match &mut self.ext {
+            InodeExt::RegInline(data) => {
+                if new_sz <= BLK_SZ {
+                    data.resize(new_sz, 0);
+                } else {
+                    // data too big, use htree
+                    // TODO
+                }
+            }
+            InodeExt::Reg { data, .. } => {
+                data.pad_to(new_sz.div_ceil(BLK_SZ) as u64)?;
+            }
+            _ => return Err(FsError::PermissionDenied),
+        }
+        self.size = new_sz as usize;
+        Ok(())
     }
 
     pub fn get_meta(&self) -> FsResult<Metadata> {
@@ -123,18 +337,7 @@ impl Inode {
 
     pub fn set_meta(&mut self, set_meta: SetMetadata) -> FsResult<()> {
         match set_meta {
-            SetMetadata::Size(sz) => {
-                match &mut self.ext {
-                    InodeExt::RegInline { data } => {
-
-                    }
-                    InodeExt::Reg { data, .. } => {
-                        data.pad_to(sz.div_ceil(BLK_SZ as u64))?;
-                    }
-                    _ => return Err(FsError::PermissionDenied),
-                }
-                self.size = sz as usize;
-            }
+            SetMetadata::Size(sz) => self.set_file_len(sz)?,
             SetMetadata::Atime(t) => self.atime = t,
             SetMetadata::Ctime(t) => self.ctime = t,
             SetMetadata::Mtime(t) => self.mtime = t,

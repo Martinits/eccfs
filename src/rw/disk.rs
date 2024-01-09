@@ -40,19 +40,17 @@ rw_as_blob!(DInodeBase);
 // di_base(32)
 // data 96 Bytes
 // = 128 Bytes
-pub const DI_REG_INLINE_DATA_MAX: u64 = 96;
+pub const REG_INLINE_DATA_MAX: usize = 96;
 
 #[repr(C)]
 #[derive(Default)]
 pub struct DInodeReg {
     pub base: DInodeBase,
 
-    /// 128bit key + 128bit MAC for encrypted mode
-    /// 256bit HASH for integrity only mode
-    pub key_entry: [u8; 32],
+    /// data file key entry
+    pub data_file_ke: [u8; 32],
 
-    /// file root node sha256 as data file name(in hex)
-    /// same as key_entry in IntegrityOnly Mode
+    /// data file name by hash of iid
     pub data_file: [u8; 32],
 
     /// total blocks of data section, i.e. the Hash Tree
@@ -60,7 +58,17 @@ pub struct DInodeReg {
 }
 rw_as_blob!(DInodeReg);
 
+#[repr(C)]
+pub struct DInodeRegInline {
+    pub base: DInodeBase,
+
+    /// data
+    pub data: [u8; REG_INLINE_DATA_MAX],
+}
+rw_as_blob!(DInodeRegInline);
+
 pub const DIRENT_SZ: usize = 256;
+pub const DIRENT_NAME_MAX: usize = DIRENT_SZ - 12;
 
 #[repr(C)]
 #[derive(Clone, Debug)]
@@ -71,38 +79,50 @@ pub struct DiskDirEntry {
     /// name length
     pub len: u16,
     // name
-    pub name: [u8; DIRENT_SZ - 12],
+    pub name: [u8; DIRENT_NAME_MAX],
 }
 rw_as_blob!(DiskDirEntry);
-
-#[repr(C)]
-pub struct DInodeDirInline {
-    pub base: DInodeBase,
-
-    /// inline dir entries
-    pub de_list: [u8; 96],
-
-}
-rw_as_blob!(DInodeDirInline);
 
 #[repr(C)]
 pub struct DInodeDir {
     pub base: DInodeBase,
 
-    /// data file hash
+    /// data file key entry
+    pub data_file_ke: [u8; 32],
+
+    /// data file name by hash of iid
     pub data_file: [u8; 32],
 
-    pub _padding: [u8; 64],
+    pub _padding: [u8; 32],
 }
 rw_as_blob!(DInodeDir);
 
+pub const LNK_INLINE_MAX: usize = INODE_SZ - size_of::<DInodeBase>();
+
 #[repr(C)]
-pub struct DInodeLnk {
+pub struct DInodeLnkInline {
     pub base: DInodeBase,
 
-    /// name, must be <= 96B
-    pub name: [u8; 96],
+    /// name
+    pub name: [u8; LNK_INLINE_MAX],
+}
+rw_as_blob!(DInodeLnkInline);
+
+
+#[repr(C)]
+pub struct DInodeLnk{
+    pub base: DInodeBase,
+
+    /// name file(one block) key entry
+    pub name_file_ke: [u8; 32],
+
+    /// data file name by hash of iid
+    pub data_file: [u8; 32],
+
+    pub _padding: [u8; 32],
 }
 rw_as_blob!(DInodeLnk);
 
-pub const LNK_NAME_MAX: u64 = 96;
+pub const LNK_NAME_MAX: usize = BLK_SZ;
+
+pub const LNK_DATA_FILE_BLK_POS: u64 = 0;

@@ -53,7 +53,7 @@ impl ROFS {
         // read superblock
         let mut sb_blk = storage.read_blk(SUPERBLOCK_POS)?;
         // check crypto
-        crypto_in(&mut sb_blk, CryptoHint::from_fsmode(mode, SUPERBLOCK_POS))?;
+        crypto_in(&mut sb_blk, CryptoHint::from_fsmode(mode.clone(), SUPERBLOCK_POS))?;
         let sb = SuperBlock::new(sb_blk)?;
 
         // start cache channel server

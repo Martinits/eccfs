@@ -21,10 +21,12 @@ use std::fs;
 
 
 pub const RWFS_MAGIC: u64 = 0x0045434352574653; // ECCRWFS
-pub const NAME_MAX: u64 = u16::MAX as u64;
+pub const NAME_MAX: u64 = DIRENT_NAME_MAX as u64;
 pub const SB_FILE_NAME: &str = "meta";
 
 pub const RW_CACHE_CAP_DEFAULT_ITBL: usize = 4;
+
+pub const DATA_FILE_NAME_LEN: usize = size_of::<Hash256>() * 2;
 
 pub struct RWFS {
     regen_root_key: bool,
@@ -55,14 +57,7 @@ impl RWFS {
         // read superblock
         let mut sb_blk = sb_file.read_blk(SUPERBLOCK_POS)?;
         // check crypto
-        match &mode {
-            FSMode::Encrypted(key, mac) => {
-                aes_gcm_128_blk_dec(&mut sb_blk, key, mac, SUPERBLOCK_POS)?;
-            }
-            FSMode::IntegrityOnly(hash) => {
-                sha3_256_blk_check(&sb_blk, hash)?;
-            }
-        }
+        crypto_in(&mut sb_blk, CryptoHint::from_fsmode(mode.clone(), SUPERBLOCK_POS))?;
         let sb = SuperBlock::new(sb_blk)?;
 
         // read ibitmap
@@ -74,13 +69,12 @@ impl RWFS {
         for (i, (blk, ke)) in ibitmap_blks.iter_mut().zip(sb.ibitmap_ke.iter()).enumerate() {
             let pos = i as u64 + sb.ibitmap_start;
             sb_file.read_blk_to(pos, blk)?;
-            if mode.is_encrypted() {
-                let key = ke[0..size_of::<Key128>()].try_into().unwrap();
-                let mac = ke[size_of::<Key128>()..].try_into().unwrap();
-                aes_gcm_128_blk_dec(blk, key, mac, pos)?;
-            } else {
-                sha3_256_blk_check(blk, ke)?;
-            }
+            crypto_in(
+                blk,
+                CryptoHint::from_key_entry(
+                    ke.clone(), mode.is_encrypted(), pos
+                )
+            )?;
         }
         let ibitmap = BitMap::new(ibitmap_blks)?;
 
@@ -125,7 +119,7 @@ impl RWFS {
             iid_to_htree_logi_pos(iid), &mut ib,
         )?;
         assert_eq!(read, INODE_SZ);
-        Inode::new_from_raw(&ib, iid)
+        Inode::new_from_raw(&ib, iid, &self.path, self.mode.is_encrypted())
     }
 
     fn write_inode(&self, iid: InodeID, inode: Inode) -> FsResult<()> {
@@ -203,14 +197,14 @@ impl FileSystem for RWFS {
         sb_file.expand_len(1 + ibitmap_blks.len() as u64)?;
         for (i, blk) in ibitmap_blks.iter_mut().enumerate() {
             let pos = i as u64 + rwlock_read!(self.sb).ibitmap_start;
-            let ke = if self.mode.is_encrypted() {
-                let key = self.key_gen.gen_key(pos)?;
-                let mac = aes_gcm_128_blk_enc(blk, &key, pos)?;
-                FSMode::Encrypted(key, mac)
-            } else {
-                let hash = sha3_256_blk(blk)?;
-                FSMode::IntegrityOnly(hash)
-            }.into_key_entry();
+            let ke = crypto_out(blk,
+                if self.mode.is_encrypted() {
+                    Some(self.key_gen.gen_key(pos)?)
+                } else {
+                    None
+                },
+                pos
+            )?.into_key_entry();
             ibitmap_ke.push(ke);
             sb_file.write_blk(pos, blk)?;
         }
@@ -222,18 +216,19 @@ impl FileSystem for RWFS {
 
         // write superblock
         let mut sb_blk = rwlock_read!(self.sb).write()?;
-        let mode = if self.mode.is_encrypted() {
-            let key = if self.regen_root_key {
-                self.key_gen.gen_key(SUPERBLOCK_POS)?
+        let mode = crypto_out(&mut sb_blk,
+            if self.mode.is_encrypted() {
+                let key = if self.regen_root_key {
+                    self.key_gen.gen_key(SUPERBLOCK_POS)?
+                } else {
+                    self.mode.get_key().unwrap()
+                };
+                Some(key)
             } else {
-                self.mode.get_key().unwrap()
-            };
-            let mac = aes_gcm_128_blk_enc(&mut sb_blk, &key, SUPERBLOCK_POS)?;
-            FSMode::Encrypted(key, mac)
-        } else {
-            let hash = sha3_256_blk(&sb_blk)?;
-            FSMode::IntegrityOnly(hash)
-        };
+                None
+            },
+            SUPERBLOCK_POS
+        )?;
         sb_file.write_blk(SUPERBLOCK_POS, &sb_blk)?;
 
         Ok(mode)
@@ -312,7 +307,10 @@ impl FileSystem for RWFS {
         perm: u16,
     ) -> FsResult<InodeID> {
         let iid = mutex_lock!(self.ibitmap).alloc()?;
-        let inode = Inode::new(iid, ftype, uid, gid, perm & PERM_MASK)?;
+        let inode = Inode::new(
+            iid, ftype, uid, gid, perm & PERM_MASK,
+            &self.path, self.mode.is_encrypted()
+        )?;
 
         rwlock_write!(self.get_inode(parent, true)?).add_child(name, ftype, iid)?;
 
@@ -354,7 +352,10 @@ impl FileSystem for RWFS {
     ) -> FsResult<InodeID> {
         let iid = mutex_lock!(self.ibitmap).alloc()?;
         // symlink permissions are always 0777 since on Linux they are not used anyway
-        let mut inode = Inode::new(iid, FileType::Lnk, uid, gid, PERM_MASK)?;
+        let mut inode = Inode::new(
+            iid, FileType::Lnk, uid, gid, PERM_MASK,
+            &self.path, self.mode.is_encrypted()
+        )?;
         inode.set_link(to)?;
 
         rwlock_write!(self.get_inode(parent, true)?).add_child(name, FileType::Lnk, iid)?;
