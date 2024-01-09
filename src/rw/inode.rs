@@ -30,6 +30,8 @@ enum InodeExt {
     Lnk(PathBuf),
 }
 
+pub const REG_INLINE_EXPAND_THRESHOLD: usize = BLK_SZ;
+
 pub struct Inode {
     iid: InodeID,
     pub tp: FileType,
@@ -42,6 +44,8 @@ pub struct Inode {
     mtime: SystemTime,
     size: usize, // with . and ..
     ext: InodeExt,
+    encrypted: bool,
+    fs_path: PathBuf,
 }
 
 pub type InodeBytes = [u8; INODE_SZ];
@@ -116,6 +120,8 @@ impl Inode {
             size: di_base.size as usize,
             // just something to hold the place
             ext: InodeExt::Lnk(PathBuf::new()),
+            encrypted,
+            fs_path: fs_path.clone(),
         };
 
         ret.ext = match tp {
@@ -264,7 +270,9 @@ impl Inode {
                     }
                 }
                 FileType::Lnk => InodeExt::Lnk(PathBuf::new()),
-            }
+            },
+            encrypted,
+            fs_path: fs_path.clone(),
         })
     }
 
@@ -289,21 +297,67 @@ impl Inode {
     }
 
     pub fn write_data(&mut self, offset: usize, from: &[u8]) -> FsResult<usize> {
-        Ok(0)
+        self.possible_expand_to_htree(offset + from.len())?;
+
+        match &mut self.ext {
+            InodeExt::Reg { data, .. } => {
+                let written = data.write_exact(offset, from)?;
+                Ok(written)
+            }
+            InodeExt::RegInline(data) => {
+                assert!(data.len() == self.size);
+                let write_end = offset + from.len();
+                data.resize(write_end, 0);
+                data[offset..write_end].copy_from_slice(from);
+                Ok(from.len())
+            }
+            _ => Err(FsError::PermissionDenied),
+        }
+    }
+
+    fn possible_expand_to_htree(&mut self, write_end: usize) -> FsResult<()> {
+        if let InodeExt::RegInline(_) = &self.ext {
+            if write_end > REG_INLINE_EXPAND_THRESHOLD {
+                self.expand_to_htree()?;
+            }
+        }
+        Ok(())
+    }
+
+    fn expand_to_htree(&mut self) -> FsResult<()> {
+        let (data_file_name, htree) = match &self.ext {
+            InodeExt::RegInline(data) => {
+                let (data_file_name, backend) = new_data_file(self.fs_path.clone(), self.iid)?;
+                let mut htree = RWHashTree::new(
+                    None,
+                    backend,
+                    0,
+                    None,
+                    self.encrypted,
+                );
+                assert_eq!(htree.write_exact(0, data)?, data.len());
+                (data_file_name, htree)
+            }
+            _ => return Err(FsError::UnknownError),
+        };
+
+        self.ext = InodeExt::Reg {
+            data_file_name,
+            data: htree,
+        };
+
+        Ok(())
     }
 
     fn set_file_len(&mut self, new_sz: usize) -> FsResult<()> {
+        self.possible_expand_to_htree(new_sz)?;
+
         match &mut self.ext {
             InodeExt::RegInline(data) => {
-                if new_sz <= BLK_SZ {
-                    data.resize(new_sz, 0);
-                } else {
-                    // data too big, use htree
-                    // TODO
-                }
+                data.resize(new_sz, 0);
             }
             InodeExt::Reg { data, .. } => {
-                data.pad_to(new_sz.div_ceil(BLK_SZ) as u64)?;
+                data.resize(new_sz.div_ceil(BLK_SZ) as u64)?;
             }
             _ => return Err(FsError::PermissionDenied),
         }
@@ -397,6 +451,7 @@ impl Inode {
     }
 
     pub fn sync_data(&mut self) -> FsResult<()> {
+        // htree to inline, inline to tree, no REG_INLINE_EXPAND_THRESHOLD
         unimplemented!();
     }
 

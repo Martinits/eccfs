@@ -194,7 +194,7 @@ impl FileSystem for RWFS {
         // write bitmap
         let mut ibitmap_blks = mutex_lock!(self.ibitmap).write()?;
         let mut ibitmap_ke = Vec::with_capacity(ibitmap_blks.len());
-        sb_file.expand_len(1 + ibitmap_blks.len() as u64)?;
+        sb_file.set_len(1 + ibitmap_blks.len() as u64)?;
         for (i, blk) in ibitmap_blks.iter_mut().enumerate() {
             let pos = i as u64 + rwlock_read!(self.sb).ibitmap_start;
             let ke = crypto_out(blk,

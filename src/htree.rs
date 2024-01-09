@@ -286,13 +286,18 @@ impl RWHashTree {
         }
     }
 
-    pub fn pad_to(&mut self, nr_blk: u64) -> FsResult<()> {
+    pub fn resize(&mut self, nr_blk: u64) -> FsResult<()> {
+        let htree_phy_nr_blk = mht::get_phy_nr_blk(nr_blk);
+        // if the htree is cut, there should be invalid ke that points to somewhere over length
+        // but it's ok, since we don't check anything over length
+        self.backend.set_len(htree_phy_nr_blk)?;
+
         if nr_blk < self.length {
+            if nr_blk == 0 {
+                self.root_mode = FSMode::new_zero(self.encrypted);
+            }
             return Ok(());
         }
-
-        let htree_phy_nr_blk = mht::get_phy_nr_blk(nr_blk);
-        self.backend.expand_len(htree_phy_nr_blk)?;
 
         let mut idx_pos = 0;
         let mut idx_blk = None;
@@ -337,7 +342,7 @@ impl RWHashTree {
                 return Ok(None);
             }
             // pad file length to pos + 1
-            self.pad_to(pos + 1)?;
+            self.resize(pos + 1)?;
         }
 
         let data_phy = mht::logi2phy(pos);

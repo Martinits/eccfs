@@ -11,7 +11,7 @@ pub trait ROStorage: Send + Sync {
 
 pub trait RWStorage: ROStorage + Send + Sync {
     fn write_blk(&mut self, pos: u64, from: &Block) -> FsResult<()>;
-    fn expand_len(&mut self, nr_blk: u64) -> FsResult<()>;
+    fn set_len(&mut self, nr_blk: u64) -> FsResult<()>;
 }
 
 pub struct FileStorage {
@@ -69,12 +69,9 @@ impl RWStorage for FileStorage {
         }
     }
 
-    fn expand_len(&mut self, nr_blk: u64) -> FsResult<()> {
+    fn set_len(&mut self, nr_blk: u64) -> FsResult<()> {
         let len = blk2byte!(nr_blk);
-        let cur_len = io_try!(self.handle.seek(SeekFrom::End(0)));
-        if len > cur_len {
-            io_try!(self.handle.set_len(len));
-        }
+        io_try!(self.handle.set_len(len));
         Ok(())
     }
 }
