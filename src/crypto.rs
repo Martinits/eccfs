@@ -14,7 +14,34 @@ pub type KeyEntry = [u8; 32];
 
 pub const KEY_ENTRY_SZ: usize = 32;
 
+pub fn crypto_in(blk: &mut Block, hint: CryptoHint) -> FsResult<()> {
+    match hint {
+        CryptoHint::Encrypted(key, mac, pos) => {
+            aes_gcm_128_blk_dec(blk, &key, &mac, pos)?;
+        }
+        CryptoHint::IntegrityOnly(hash) => {
+            sha3_256_blk_check(blk, &hash)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn crypto_out(blk: &mut Block, encrypted: Option<Key128>, pos: u64) -> FsResult<FSMode> {
+    let mode = if let Some(key) = encrypted {
+        let mac = aes_gcm_128_blk_enc(blk, &key, pos)?;
+        FSMode::Encrypted(key, mac)
+    } else {
+        let hash = sha3_256_blk(blk)?;
+        FSMode::IntegrityOnly(hash)
+    };
+    Ok(mode)
+}
+
 pub fn sha3_256_blk(input: &Block) -> FsResult<Hash256> {
+    sha3_256_any(input)
+}
+
+pub fn sha3_256_any(input: &[u8]) -> FsResult<Hash256> {
     let mut hasher = Sha3_256::new();
 
     hasher.update(input);
@@ -27,7 +54,11 @@ pub fn sha3_256_blk(input: &Block) -> FsResult<Hash256> {
 }
 
 pub fn sha3_256_blk_check(input: &Block, hash: &Hash256) -> FsResult<()> {
-    let actual = sha3_256_blk(input)?;
+    sha3_256_any_check(input, hash)
+}
+
+pub fn sha3_256_any_check(input: &[u8], hash: &Hash256) -> FsResult<()> {
+    let actual = sha3_256_any(input)?;
     if actual != *hash {
         Err(FsError::IntegrityCheckError)
     } else {

@@ -8,38 +8,11 @@ use std::thread;
 use crate::crypto::*;
 
 
-#[derive(Clone)]
-pub enum CacheMissHint {
-    Encrypted(Key128, MAC128, u64), // key, mac, nonce
-    IntegrityOnly(Hash256),
-}
-
-impl CacheMissHint {
-    pub fn from_fsmode(fsmode: FSMode, nonce: u64) -> Self {
-        match fsmode {
-            FSMode::IntegrityOnly(hash) => CacheMissHint::IntegrityOnly(hash),
-            FSMode::Encrypted(key, mac) => CacheMissHint::Encrypted(key, mac, nonce),
-        }
-    }
-
-    pub fn is_encrypted(&self) -> bool {
-        if let Self::Encrypted(_, _, _) = self {
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn from_key_entry(ke: KeyEntry, encrypted: bool, nonce: u64) -> Self {
-        Self::from_fsmode(FSMode::from_key_entry(ke, encrypted), nonce)
-    }
-}
-
 enum ROCacheReq {
     Get {
         pos: u64,
         cachable: bool,
-        miss_hint: Option<CacheMissHint>,
+        miss_hint: Option<CryptoHint>,
         reply: Sender<FsResult<Option<Arc<Block>>>>,
     },
     Flush,
@@ -98,13 +71,13 @@ impl ROCache {
     }
 
     pub fn get_blk_hint(
-        &mut self, pos: u64, cachable: bool, hint: CacheMissHint
+        &mut self, pos: u64, cachable: bool, hint: CryptoHint
     ) -> FsResult<Arc<Block>> {
         self.get_blk_impl(pos, cachable, Some(hint))?.ok_or(FsError::NotFound)
     }
 
     fn get_blk_impl(
-        &mut self, pos: u64, cachable: bool, hint: Option<CacheMissHint>
+        &mut self, pos: u64, cachable: bool, hint: Option<CryptoHint>
     ) -> FsResult<Option<Arc<Block>>> {
         let (tx, rx) = mpsc::channel();
         self.tx_to_server.send(ROCacheReq::Get {
@@ -185,20 +158,13 @@ impl ROCacheServer {
         }
     }
 
-    fn fetch_from_backend(&mut self, pos: u64, hint: CacheMissHint) -> FsResult<Block> {
+    fn fetch_from_backend(&mut self, pos: u64, hint: CryptoHint) -> FsResult<Block> {
         let mut blk = self.backend.read_blk(pos)?;
-        match hint {
-            CacheMissHint::Encrypted(key, mac, nonce) => {
-                aes_gcm_128_blk_dec(&mut blk, &key, &mac, nonce)?;
-            }
-            CacheMissHint::IntegrityOnly(hash) => {
-                sha3_256_blk_check(&blk, &hash)?;
-            }
-        }
+        crypto_in(&mut blk, hint)?;
         Ok(blk)
     }
 
-    fn cache_miss(&mut self, pos: u64, hint: CacheMissHint) -> FsResult<Option<Arc<Block>>> {
+    fn cache_miss(&mut self, pos: u64, hint: CryptoHint) -> FsResult<Option<Arc<Block>>> {
         let blk = self.fetch_from_backend(pos, hint)?;
         let ablk = Arc::new(blk);
         // read only cache, no write back

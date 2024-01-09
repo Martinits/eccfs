@@ -300,7 +300,7 @@ impl Into<fuser::FileAttr> for Metadata {
 }
 
 pub enum SetMetadata {
-    Size(u64),
+    Size(usize),
     Atime(SystemTime),
     Ctime(SystemTime),
     Mtime(SystemTime),

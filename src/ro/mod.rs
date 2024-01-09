@@ -53,14 +53,7 @@ impl ROFS {
         // read superblock
         let mut sb_blk = storage.read_blk(SUPERBLOCK_POS)?;
         // check crypto
-        match &mode {
-            FSMode::Encrypted(key, mac) => {
-                aes_gcm_128_blk_dec(&mut sb_blk, key, mac, SUPERBLOCK_POS)?;
-            }
-            FSMode::IntegrityOnly(hash) => {
-                sha3_256_blk_check(&sb_blk, hash)?;
-            }
-        }
+        crypto_in(&mut sb_blk, CryptoHint::from_fsmode(mode, SUPERBLOCK_POS))?;
         let sb = SuperBlock::new(sb_blk)?;
 
         // start cache channel server

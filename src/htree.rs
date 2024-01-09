@@ -132,7 +132,7 @@ pub struct ROHashTree {
     length: u64, // in blocks
     encrypted: bool,
     cache_data: bool,
-    root_hint: CacheMissHint,
+    root_hint: CryptoHint,
 }
 
 impl ROHashTree {
@@ -151,7 +151,7 @@ impl ROHashTree {
             length,
             encrypted,
             cache_data,
-            root_hint: CacheMissHint::from_fsmode(root_hint, HTREE_ROOT_BLK_PHY_POS),
+            root_hint: CryptoHint::from_fsmode(root_hint, HTREE_ROOT_BLK_PHY_POS),
         }
     }
 
@@ -214,7 +214,7 @@ impl ROHashTree {
                     mht::Index(child_idx)
                 }
             );
-            let hint = CacheMissHint::from_key_entry(ke, self.encrypted, child_phy);
+            let hint = CryptoHint::from_key_entry(ke, self.encrypted, child_phy);
             this_idx_ablk = backend.get_blk_hint(
                 self.start + child_phy, true, hint
             )?;
@@ -457,29 +457,23 @@ impl RWHashTree {
 
     fn backend_read(&mut self, pos: u64, mode: FSMode) -> FsResult<Block> {
         let mut blk = self.backend.read_blk(pos)?;
-        match mode {
-            FSMode::Encrypted(key, mac) => {
-                aes_gcm_128_blk_dec(&mut blk, &key, &mac, pos)?;
-            }
-            FSMode::IntegrityOnly(hash) => {
-                sha3_256_blk_check(&blk, &hash)?;
-            }
-        }
+        crypto_in(&mut blk, CryptoHint::from_fsmode(mode, pos))?;
         Ok(blk)
     }
 
     fn backend_write(
         &mut self, pos: u64, mut blk: Block,
     ) -> FsResult<FSMode> {
-        let mode = if self.encrypted {
-            // generate new aes key on every write_back
-            let key = self.key_gen.gen_key(pos)?;
-            let mac = aes_gcm_128_blk_enc(&mut blk, &key, pos)?;
-            FSMode::Encrypted(key, mac)
-        } else {
-            let hash = sha3_256_blk(&blk)?;
-            FSMode::IntegrityOnly(hash)
-        };
+        let mode = crypto_out(
+            &mut blk,
+            if self.encrypted {
+                // generate new aes key on every write_back
+                Some(self.key_gen.gen_key(pos)?)
+            } else {
+                None
+            },
+            pos
+        )?;
         self.backend.write_blk(pos, &blk)?;
         Ok(mode)
     }

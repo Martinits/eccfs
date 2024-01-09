@@ -800,13 +800,7 @@ impl ROBuilder {
             encrypted: self.encrypted.is_some(),
         };
 
-        let ret = if let Some(key) = self.encrypted {
-            let mac = aes_gcm_128_blk_enc(&mut sb_blk, &key, SUPERBLOCK_POS)?;
-            FSMode::Encrypted(key, mac)
-        } else {
-            let hash = sha3_256_blk(&sb_blk)?;
-            FSMode::IntegrityOnly(hash)
-        };
+        let ret = crypto_out(&mut sb_blk, self.encrypted, SUPERBLOCK_POS)?;
         write_file_at(&mut self.image, 0, &sb_blk)?;
 
         // close files
@@ -843,19 +837,16 @@ impl HTreeBuilder {
     }
 
     fn crypto_process_blk(&mut self, blk: &mut Block, pos: u64) -> FsResult<KeyEntry> {
-        let ke = if self.encrypted {
-            let key = self.key_gen.gen_key(pos)?;
+        let mode = crypto_out(blk,
+            if self.encrypted {
+                Some(self.key_gen.gen_key(pos)?)
+            } else {
+                None
+            },
+            pos
+        )?;
 
-            let mac = aes_gcm_128_blk_enc(blk, &key, pos)?;
-
-            unsafe {
-                std::mem::transmute((key, mac))
-            }
-        } else {
-            sha3_256_blk(blk)?
-        };
-
-        Ok(ke)
+        Ok(mode.into_key_entry())
     }
 
     fn build_htree(

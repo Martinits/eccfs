@@ -94,7 +94,7 @@ impl Filesystem for EccFs {
             set_list.push(SetMetadata::Gid(gid));
         }
         if let Some(sz) = size {
-            set_list.push(SetMetadata::Size(sz));
+            set_list.push(SetMetadata::Size(sz as usize));
         }
         if let Some(atime) = atime {
             let atime = match atime {

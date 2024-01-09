@@ -89,6 +89,33 @@ impl FSMode {
     }
 }
 
+#[derive(Clone)]
+pub enum CryptoHint {
+    Encrypted(Key128, MAC128, u64), // key, mac, nonce
+    IntegrityOnly(Hash256),
+}
+
+impl CryptoHint {
+    pub fn from_fsmode(fsmode: FSMode, nonce: u64) -> Self {
+        match fsmode {
+            FSMode::IntegrityOnly(hash) => CryptoHint::IntegrityOnly(hash),
+            FSMode::Encrypted(key, mac) => CryptoHint::Encrypted(key, mac, nonce),
+        }
+    }
+
+    pub fn is_encrypted(&self) -> bool {
+        if let Self::Encrypted(_, _, _) = self {
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn from_key_entry(ke: KeyEntry, encrypted: bool, nonce: u64) -> Self {
+        Self::from_fsmode(FSMode::from_key_entry(ke, encrypted), nonce)
+    }
+}
+
 macro_rules! read_from_blob {
     ($T: ty) => {
         impl AsMut<[u8]> for $T {
