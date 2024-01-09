@@ -286,7 +286,7 @@ impl RWHashTree {
         }
     }
 
-    fn pad_to(&mut self, nr_blk: u64) -> FsResult<()> {
+    pub fn pad_to(&mut self, nr_blk: u64) -> FsResult<()> {
         if nr_blk < self.length {
             return Ok(());
         }

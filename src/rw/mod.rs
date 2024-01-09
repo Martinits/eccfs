@@ -16,7 +16,6 @@ use crate::storage::*;
 use crate::lru::*;
 use disk::*;
 use std::mem::size_of;
-use crate::crypto::half_md4;
 use bitmap::*;
 use std::fs;
 
@@ -131,8 +130,12 @@ impl RWFS {
 
     fn write_inode(&self, iid: InodeID, inode: Inode) -> FsResult<()> {
         let ib = inode.destroy()?;
+        self.write_itbl(iid, &ib)
+    }
+
+    fn write_itbl(&self, iid: InodeID, ib: &InodeBytes) -> FsResult<()> {
         mutex_lock!(self.inode_tbl).write_exact(
-            iid_to_htree_logi_pos(iid), &ib
+            iid_to_htree_logi_pos(iid), ib
         )?;
         Ok(())
     }
@@ -170,6 +173,17 @@ impl RWFS {
     }
 
     fn remove_inode(&self, iid: InodeID) -> FsResult<()> {
+        let mut icac = mutex_lock!(&self.icac);
+        // load inode
+        let _ = self.get_inode(iid, false)?;
+        let ainode = icac.flush_key(iid)?.unwrap();
+
+        // remove data file
+        ainode.into_inner().unwrap().remove_data_file()?;
+
+        // zero that disk range and reset bitmap
+        self.write_itbl(iid, &ZERO_INODE)?;
+
         Ok(())
     }
 }
@@ -366,15 +380,17 @@ impl FileSystem for RWFS {
 
     fn lookup(&self, iid: InodeID, name: &OsStr) -> FsResult<Option<InodeID>> {
         // Currently we don't use de_cac
-        // TODO: use read_data
-        unimplemented!();
+        rwlock_write!(self.get_inode(iid, true)?).find_child(name)
     }
 
     fn listdir(
         &self, iid: InodeID, offset: usize, num: usize,
     ) -> FsResult<Vec<(InodeID, PathBuf, FileType)>> {
-        // TODO: use read_data
-        unimplemented!();
+        let inode = self.get_inode(iid, true)?;
+        let l = rwlock_write!(inode).read_child(offset, num)?.into_iter().map(
+            |DirEntry {ipos, tp, name}| (ipos, name.into(), tp)
+        ).collect();
+        Ok(l)
     }
 
     fn fallocate(
@@ -384,6 +400,6 @@ impl FileSystem for RWFS {
         offset: usize,
         len: usize,
     ) -> FsResult<()> {
-        Err(FsError::Unsupported)
+        rwlock_write!(self.get_inode(iid, true)?).fallocate(mode, offset, len)
     }
 }

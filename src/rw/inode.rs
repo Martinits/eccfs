@@ -10,11 +10,10 @@ use crate::crypto::half_md4;
 use super::*;
 
 
-struct DirEntry {
-    ipos: u64,
-    len: u16,
-    tp: FileType,
-    name: String,
+pub struct DirEntry {
+    pub ipos: u64,
+    pub tp: FileType,
+    pub name: String,
 }
 
 enum InodeExt {
@@ -144,7 +143,15 @@ impl Inode {
         }
     }
 
-    pub fn add_child(&self, name: &OsStr, tp: FileType, iid: InodeID) -> FsResult<()> {
+    pub fn read_child(&mut self, offset: usize, num: usize) -> FsResult<Vec<DirEntry>> {
+        unimplemented!();
+    }
+
+    pub fn find_child(&mut self, name: &OsStr) -> FsResult<Option<InodeID>> {
+        unimplemented!();
+    }
+
+    pub fn add_child(&mut self, name: &OsStr, tp: FileType, iid: InodeID) -> FsResult<()> {
         // if name exists, return err
         Ok(())
     }
@@ -154,12 +161,18 @@ impl Inode {
         Ok(())
     }
 
-    pub fn remove_child(&self, name: &OsStr) -> FsResult<(InodeID, FileType)> {
+    pub fn remove_child(&mut self, name: &OsStr) -> FsResult<(InodeID, FileType)> {
+        unimplemented!();
+    }
+
+    pub fn fallocate(&mut self, mode: FallocateMode, offset: usize, len: usize) -> FsResult<()> {
+        // use htree pad_to
+        // htree new method: zero_range
         unimplemented!();
     }
 
     pub fn sync_data(&mut self) -> FsResult<()> {
-        Ok(())
+        unimplemented!();
     }
 
     pub fn sync_meta(&self) -> FsResult<InodeBytes> {
@@ -167,6 +180,11 @@ impl Inode {
     }
 
     pub fn destroy(self) -> FsResult<InodeBytes> {
+        unimplemented!();
+    }
+
+    pub fn remove_data_file(&self) -> FsResult<()> {
+        // remove data file
         unimplemented!();
     }
 }

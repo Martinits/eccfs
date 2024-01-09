@@ -3,6 +3,8 @@ use crate::*;
 pub const INODE_SZ: usize = 128;
 pub const INODE_PER_BLK: usize = BLK_SZ / INODE_SZ;
 
+pub const ZERO_INODE: [u8; INODE_SZ] = [0u8; INODE_SZ];
+
 #[repr(C)]
 #[derive(Default)]
 pub struct DInodeBase {
@@ -58,17 +60,20 @@ pub struct DInodeReg {
 }
 rw_as_blob!(DInodeReg);
 
+pub const DIRENT_SZ: usize = 256;
+
 #[repr(C)]
-#[derive(Default, Clone, Debug)]
-pub struct DirEntryBase {
+#[derive(Clone, Debug)]
+pub struct DiskDirEntry {
     /// inode number, aligned by 128B
     pub ipos: u64,
-    /// total length of this entry
-    pub len: u16,
     pub tp: u16,
-    // name is here, with length of "len" - 12, bu with a min space of 4B
+    /// name length
+    pub len: u16,
+    // name
+    pub name: [u8; DIRENT_SZ - 12],
 }
-rw_as_blob!(DirEntryBase);
+rw_as_blob!(DiskDirEntry);
 
 #[repr(C)]
 pub struct DInodeDirInline {
