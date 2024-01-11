@@ -189,13 +189,19 @@ impl Inode {
                     let fname = hex::encode_upper(&di.data_file);
                     assert_eq!(fname.len(), DATA_FILE_NAME_LEN);
                     p.push(fname.clone());
-                    let back = FileStorage::new(&p, true)?;
+
+                    let mut back = FileStorage::new(&p, true)?;
+                    assert_eq!(back.get_len()?, blk2byte!(di.len));
+                    assert_eq!(
+                        di.base.size.div_ceil(BLK_SZ as u64),
+                        blk2byte!(di.len)
+                    );
                     InodeExt::Reg {
                         data_file_name: fname.into(),
                         data: RWHashTree::new(
                             None,
                             Box::new(back),
-                            di.base.size.div_ceil(BLK_SZ as u64),
+                            di.len,
                             Some(FSMode::from_key_entry(di.data_file_ke.clone(), encrypted)),
                             encrypted,
                         )
@@ -211,13 +217,19 @@ impl Inode {
                 let fname = hex::encode_upper(&di.data_file);
                 assert_eq!(fname.len(), DATA_FILE_NAME_LEN);
                 p.push(fname.clone());
-                let back = FileStorage::new(&p, true)?;
+
+                let mut back = FileStorage::new(&p, true)?;
+                assert_eq!(back.get_len()?, blk2byte!(di.len));
+                assert_eq!(
+                    di.base.size.div_ceil(BLK_SZ as u64),
+                    blk2byte!(di.len)
+                );
                 InodeExt::Dir {
                     data_file_name: fname.into(),
                     data: RWHashTree::new(
                         None,
                         Box::new(back),
-                        di.base.size.div_ceil(BLK_SZ as u64),
+                        di.len,
                         Some(FSMode::from_key_entry(di.data_file_ke.clone(), encrypted)),
                         encrypted,
                     )
@@ -247,7 +259,10 @@ impl Inode {
                     let fname = hex::encode_upper(&di.data_file);
                     assert_eq!(fname.len(), DATA_FILE_NAME_LEN);
                     p.push(fname.clone());
+
                     let mut f = io_try!(File::open(p));
+                    assert_eq!(get_file_sz(&mut f)?, BLK_SZ as u64);
+                    assert_eq!(di.len, 1);
                     let mut blk = [0u8; BLK_SZ];
                     io_try!(f.read_exact(&mut blk));
                     crypto_in(
@@ -258,6 +273,7 @@ impl Inode {
                             LNK_DATA_FILE_BLK_POS,
                         )
                     )?;
+
                     let lnk_name = PathBuf::from_str(
                         std::str::from_utf8(
                             &blk[..di.base.size as usize]
@@ -316,8 +332,6 @@ impl Inode {
             key_gen: KeyGen::new(),
         })
     }
-
-
 
     pub fn read_data(&mut self, offset: usize, to: &mut [u8]) -> FsResult<usize> {
         if offset >= self.size {
@@ -742,6 +756,7 @@ impl Inode {
                 inode.base = base;
                 inode.data_file = fname_ke;
                 inode.data_file_ke = data.get_cur_mode().into_key_entry();
+                inode.len = data.length;
             }
             InodeExt::RegInline(data) => {
                 assert!(data.len() <= REG_INLINE_DATA_MAX);
@@ -762,6 +777,7 @@ impl Inode {
                 inode.base = base;
                 inode.data_file = fname_ke;
                 inode.data_file_ke = data.get_cur_mode().into_key_entry();
+                inode.len = data.length;
             }
             InodeExt::Lnk { lnk_name, data_file_name, name_file_ke } => {
                 let fname_ke = iid_hash(self.iid)?;
@@ -778,6 +794,7 @@ impl Inode {
                 inode.base = base;
                 inode.data_file = fname_ke;
                 inode.name_file_ke = name_file_ke.clone();
+                inode.len = 1;
             }
             InodeExt::LnkInline(lnk_name) => {
                 let inode = unsafe {

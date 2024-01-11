@@ -16,7 +16,7 @@ pub struct RWHashTree {
     // in rw, every htree has its own cache
     cache: RWCache,
     backend: Box<dyn RWStorage>,
-    length: u64, // in blocks
+    pub length: u64, // in blocks
     encrypted: bool,
     root_mode: FSMode,
     ke_buf: HashMap<u64, KeyEntry>,

@@ -213,6 +213,13 @@ pub mod io_wrapper {
         Ok(len / BLK_SZ as u64)
     }
 
+    pub fn get_file_sz(f: &mut File) -> FsResult<u64> {
+        let org_pos = get_file_pos(f)?;
+        let len = io_try!(f.seek(SeekFrom::End(0)));
+        io_try!(f.seek(SeekFrom::Start(org_pos)));
+        Ok(len)
+    }
+
     #[macro_export]
     macro_rules! io_try {
         ($e: expr) => {

@@ -30,6 +30,10 @@ impl FileStorage {
             writable,
         })
     }
+
+    pub fn get_len(&mut self) -> FsResult<u64> {
+        get_file_sz(&mut self.handle)
+    }
 }
 
 impl ROStorage for FileStorage {
