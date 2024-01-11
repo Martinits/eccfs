@@ -169,6 +169,7 @@ struct RWBuilder {
     ht: HTreeBuilder,
     files: usize,
     blocks: usize,
+    nr_data_file: usize,
 }
 
 impl RWBuilder {
@@ -184,6 +185,7 @@ impl RWBuilder {
             blocks: 0,
             key_gen: KeyGen::new(),
             ht: HTreeBuilder::new(encrypted.is_some())?,
+            nr_data_file: 2, // sb file and itbl
         })
     }
 
@@ -308,6 +310,7 @@ impl RWBuilder {
 
         self.write_inode(ROOT_INODE_ID, ino.into());
         self.blocks += len as usize;
+        self.nr_data_file += 1;
 
         Ok(())
     }
@@ -348,6 +351,8 @@ impl RWBuilder {
 
         self.write_inode(iid, ino.into());
         self.blocks += len as usize;
+        self.nr_data_file += 1;
+
         Ok(())
     }
 
@@ -379,6 +384,7 @@ impl RWBuilder {
             let (nr_blk, data_file_ke) = self.ht.build_htree(&mut f, path)?;
 
             self.blocks += nr_blk;
+            self.nr_data_file += 1;
 
             DInodeReg {
                 base: dibase,
@@ -427,6 +433,7 @@ impl RWBuilder {
             io_try!(f.write_all(&blk));
 
             self.blocks += 1;
+            self.nr_data_file += 1;
 
             DInodeLnk {
                 base: dibase,
@@ -462,7 +469,7 @@ impl RWBuilder {
             bm_ke.push(ke);
         }
         let sb = SuperBlock {
-            nr_data_file: 2, // itbl and root inode data
+            nr_data_file: self.nr_data_file,
             encrypted: self.encrypted.is_some(),
             magic: RWFS_MAGIC,
             bsize: BLK_SZ,

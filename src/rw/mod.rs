@@ -60,6 +60,15 @@ impl RWFS {
         crypto_in(&mut sb_blk, CryptoHint::from_fsmode(mode.clone(), SUPERBLOCK_POS))?;
         let sb = SuperBlock::new(sb_blk)?;
 
+        // check sb file len
+        if sb_file.get_len()? != blk2byte!(sb.ibitmap_len + 1) {
+            return Err(FsError::SuperBlockCheckFailed);
+        }
+        // check nr_data_file
+        if io_try!(fs::read_dir(path)).count() != sb.nr_data_file {
+            return Err(FsError::SuperBlockCheckFailed);
+        }
+
         // read ibitmap
         if sb.ibitmap_len == 0 {
             // no possibilty that ibitmap is empty
@@ -85,7 +94,10 @@ impl RWFS {
         }
         let itbl_file_name = hex::encode_upper(&sb.itbl_name);
         assert_eq!(itbl_file_name.len(), 2 * size_of::<Hash256>());
-        let itbl_storage = FileStorage::new(Path::new(&itbl_file_name), true)?;
+        let mut itbl_storage = FileStorage::new(Path::new(&itbl_file_name), true)?;
+        if itbl_storage.get_len()? != blk2byte!(sb.itbl_len) {
+            return Err(FsError::SuperBlockCheckFailed);
+        }
         let inode_tbl = RWHashTree::new(
             Some(RW_CACHE_CAP_DEFAULT_ITBL),
             Box::new(itbl_storage),

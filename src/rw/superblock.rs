@@ -8,7 +8,7 @@ pub const SUPERBLOCK_POS: u64 = 0;
 
 #[derive(Default)]
 pub struct SuperBlock {
-    /// number of data files
+    /// number of data files including sb_file and itbl_file
     pub nr_data_file: usize,
     /// whether in encrypted mode
     pub encrypted: bool,
@@ -63,7 +63,9 @@ impl SuperBlock {
 
         // check constants
         if dsb_base.magic != super::RWFS_MAGIC
-            || dsb_base.bsize != BLK_SZ as u64 || dsb_base.namemax != NAME_MAX {
+            || dsb_base.bsize != BLK_SZ as u64
+            || dsb_base.namemax != NAME_MAX
+            || dsb_base.ibitmap_start != 1 {
             return Err(FsError::SuperBlockCheckFailed)
         }
 
