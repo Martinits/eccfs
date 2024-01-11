@@ -89,7 +89,7 @@ impl RWFS {
         let inode_tbl = RWHashTree::new(
             Some(RW_CACHE_CAP_DEFAULT_ITBL),
             Box::new(itbl_storage),
-            sb.itbl_len,
+            sb.itbl_len as u64,
             Some(FSMode::from_key_entry(sb.itbl_ke, mode.is_encrypted())),
             mode.is_encrypted(),
         );
@@ -210,7 +210,7 @@ impl FileSystem for RWFS {
         }
         {
             let mut lock = rwlock_write!(self.sb);
-            lock.ibitmap_len = ibitmap_blks.len() as u64;
+            lock.ibitmap_len = ibitmap_blks.len();
             lock.ibitmap_ke = ibitmap_ke;
         }
 

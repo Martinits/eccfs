@@ -25,13 +25,13 @@ pub struct SuperBlock {
     /// ibitmap start, normally 1
     pub ibitmap_start: u64,
     /// ibitmap len in blk
-    pub ibitmap_len: u64,
+    pub ibitmap_len: usize,
     /// ibitmap blocks ke
     pub ibitmap_ke: Vec<KeyEntry>,
     /// itbl data file hash name
     pub itbl_name: Hash256,
     /// length of itbl data file including htree contents
-    pub itbl_len: u64,
+    pub itbl_len: usize,
     /// itbl htree key entry
     pub itbl_ke: KeyEntry,
 }
@@ -83,9 +83,9 @@ impl SuperBlock {
             files: dsb_base.files as usize,
             namemax: dsb_base.namemax as usize,
             ibitmap_start: dsb_base.ibitmap_start,
-            ibitmap_len: dsb_base.ibitmap_len,
+            ibitmap_len: dsb_base.ibitmap_len as usize,
             itbl_name: dsb_base.itbl_name,
-            itbl_len: dsb_base.itbl_len,
+            itbl_len: dsb_base.itbl_len as usize,
             itbl_ke: dsb_base.itbl_ke,
             ibitmap_ke,
         })
@@ -128,7 +128,7 @@ impl SuperBlock {
         dsb_base.ibitmap_start = self.ibitmap_start;
         dsb_base.ibitmap_len = self.ibitmap_ke.len() as u64;
         dsb_base.itbl_name = self.itbl_name;
-        dsb_base.itbl_len = self.itbl_len;
+        dsb_base.itbl_len = self.itbl_len as u64;
 
         let mut writer: &mut [u8] = &mut raw_blk[size_of::<DSuperBlockBase>()..];
         let bytes = self.ibitmap_ke.len() * size_of::<KeyEntry>();

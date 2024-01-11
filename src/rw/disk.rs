@@ -1,5 +1,24 @@
 use crate::*;
 
+pub type InodeBytes = [u8; INODE_SZ];
+
+macro_rules! into_inode_bytes {
+    ($T: ty) => {
+        impl Into<InodeBytes> for $T {
+            #[inline]
+            fn into(self) -> InodeBytes {
+                assert_eq!(std::mem::size_of::<$T>(), INODE_SZ);
+                unsafe {
+                    std::slice::from_raw_parts(
+                        &self as *const $T as *const u8,
+                        std::mem::size_of::<$T>(),
+                    ).try_into().unwrap()
+                }
+            }
+        }
+    };
+}
+
 pub const INODE_SZ: usize = 128;
 pub const INODE_PER_BLK: usize = BLK_SZ / INODE_SZ;
 
@@ -53,10 +72,13 @@ pub struct DInodeReg {
     /// data file name by hash of iid
     pub data_file: [u8; 32],
 
-    /// total blocks of data section, i.e. the Hash Tree
-    pub _padding: [u8; 32],
+    /// total blocks of data file, i.e. the Hash Tree
+    pub len: u64,
+
+    pub _padding: [u8; 24],
 }
 rw_as_blob!(DInodeReg);
+into_inode_bytes!(DInodeReg);
 
 #[repr(C)]
 pub struct DInodeRegInline {
@@ -66,6 +88,7 @@ pub struct DInodeRegInline {
     pub data: [u8; REG_INLINE_DATA_MAX],
 }
 rw_as_blob!(DInodeRegInline);
+into_inode_bytes!(DInodeRegInline);
 
 pub const DIRENT_SZ: usize = 256;
 pub const DIRENT_PER_BLK: usize = BLK_SZ / DIRENT_SZ;
@@ -94,9 +117,13 @@ pub struct DInodeDir {
     /// data file name by hash of iid
     pub data_file: [u8; 32],
 
-    pub _padding: [u8; 32],
+    /// total blocks of data file, i.e. the Hash Tree
+    pub len: u64,
+
+    pub _padding: [u8; 24],
 }
 rw_as_blob!(DInodeDir);
+into_inode_bytes!(DInodeDir);
 
 pub const LNK_INLINE_MAX: usize = INODE_SZ - size_of::<DInodeBase>();
 
@@ -108,7 +135,7 @@ pub struct DInodeLnkInline {
     pub name: [u8; LNK_INLINE_MAX],
 }
 rw_as_blob!(DInodeLnkInline);
-
+into_inode_bytes!(DInodeLnkInline);
 
 #[repr(C)]
 pub struct DInodeLnk{
@@ -120,9 +147,13 @@ pub struct DInodeLnk{
     /// data file name by hash of iid
     pub data_file: [u8; 32],
 
-    pub _padding: [u8; 32],
+    /// total blocks of data file, i.e. the Hash Tree
+    pub len: u64,
+
+    pub _padding: [u8; 24],
 }
 rw_as_blob!(DInodeLnk);
+into_inode_bytes!(DInodeLnk);
 
 pub const LNK_NAME_MAX: usize = BLK_SZ;
 

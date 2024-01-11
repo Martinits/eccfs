@@ -15,7 +15,6 @@ use std::ffi::OsString;
 use std::cmp::Ordering;
 use std::os::unix::fs::MetadataExt;
 use std::io::Write;
-use std::os::unix::fs::FileExt;
 
 
 const MAX_ENTRY_GROUP_LEN: usize = 16;
@@ -152,32 +151,6 @@ fn push_child_info(
     map.get_mut(fpb).unwrap().push(child_info);
 }
 
-fn write_vec_as_bytes<T>(f: &mut File, v: &Vec<T>) -> FsResult<()> {
-    io_try!(f.write_all(
-        unsafe {
-            std::slice::from_raw_parts(
-                v.as_ptr() as *const u8,
-                v.len() * size_of::<T>()
-            )
-        }
-    ));
-    Ok(())
-}
-
-fn write_file_at(f: &mut File, seek: u64, b: &[u8]) -> FsResult<()> {
-    if io_try!(f.write_at(b, seek)) != b.len() {
-        return Err(FsError::UnexpectedEof);
-    }
-    Ok(())
-}
-
-fn read_file_at(f: &mut File, seek: u64, b: &mut [u8]) -> FsResult<usize> {
-    Ok(io_try!(f.read_at(b, seek)))
-}
-
-fn get_file_pos(f: &mut File) -> FsResult<u64> {
-    Ok(io_try!(f.seek(SeekFrom::Current(0))))
-}
 
 #[derive(Default, Clone)]
 struct DirEntryRaw {
@@ -535,10 +508,10 @@ impl ROBuilder {
 
         // dinode dir base
         let mut dinode_base = Self::gen_inode_base(path)?;
-        // root inode nlink is always 1
-        if is_root {
-            dinode_base.nlinks = 1;
-        }
+        // // root inode nlink is always 1
+        // if is_root {
+        //     dinode_base.nlinks = 1;
+        // }
 
         // for dir inodes, size represents entry num without . and ..
         let inode_base_size = de_list_raw.len() as u64;

@@ -58,6 +58,10 @@ impl BitMap {
     pub fn write(&mut self) -> FsResult<Vec<Block>> {
         let pos_list: Vec<_> = std::mem::take(&mut self.used).into_iter().collect();
 
+        Self::write_from_list(pos_list)
+    }
+
+    pub fn write_from_list(pos_list: Vec<u64>) -> FsResult<Vec<Block>> {
         // pos_list can not be empty, at least we have root inode
         let max_pos = *pos_list.iter().max().unwrap() as usize;
         let blks_needed = (max_pos + 1).div_ceil(BLK_SZ * 8);

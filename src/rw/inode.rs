@@ -81,13 +81,11 @@ pub struct Inode {
     key_gen: KeyGen,
 }
 
-pub type InodeBytes = [u8; INODE_SZ];
-
 pub fn iid_to_htree_logi_pos(iid: InodeID) -> usize {
     iid as usize * INODE_SZ
 }
 
-fn iid_hash(iid: InodeID) -> FsResult<Hash256> {
+pub fn iid_hash(iid: InodeID) -> FsResult<Hash256> {
     sha3_256_any(
         unsafe {
             std::slice::from_raw_parts(
@@ -96,6 +94,11 @@ fn iid_hash(iid: InodeID) -> FsResult<Hash256> {
             )
         },
     )
+}
+
+pub fn iid_hash_name(iid: InodeID) -> FsResult<String> {
+    let hash = iid_hash(iid)?;
+    Ok(hex::encode_upper(&hash))
 }
 
 fn iid_hash_check(iid: InodeID, exp_hash: &Hash256) -> FsResult<()> {
