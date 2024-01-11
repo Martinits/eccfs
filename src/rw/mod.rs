@@ -283,7 +283,7 @@ impl FileSystem for RWFS {
 
     fn isync_meta(&self, iid: InodeID) -> FsResult<()> {
         let mut icac = mutex_lock!(&self.icac);
-        if let Some(ainode) = icac.get(iid)? {
+        if let Some(ainode) = icac.flush_key(iid)? {
             let ib = rwlock_write!(ainode).sync_meta()?;
             mutex_lock!(self.inode_tbl).write_exact(
                 iid_to_htree_logi_pos(iid), &ib
@@ -319,7 +319,7 @@ impl FileSystem for RWFS {
     }
 
     fn link(&self, parent: InodeID, name: &OsStr, linkto: InodeID) -> FsResult<()> {
-        let to = self.get_inode(linkto, false)?;
+        let to = self.get_inode(linkto, true)?;
         let mut lock = rwlock_write!(to);
         lock.nlinks += 1;
         let tp = lock.tp;
@@ -332,7 +332,7 @@ impl FileSystem for RWFS {
 
     fn unlink(&self, parent: InodeID, name: &OsStr) -> FsResult<()> {
         let (iid, _) = rwlock_write!(self.get_inode(parent, true)?).remove_child(name)?;
-        let inode = self.get_inode(iid, false)?;
+        let inode = self.get_inode(iid, true)?;
         let mut lock = rwlock_write!(inode);
         if lock.nlinks == 1 {
             self.remove_inode(iid)?;
