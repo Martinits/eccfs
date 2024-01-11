@@ -47,11 +47,13 @@ impl From<DiskDirEntry> for DirEntry {
 enum InodeExt {
     Reg {
         data_file_name: PathBuf,
+        htree_org_len: u64, // in blocks
         data: RWHashTree,
     },
     RegInline(Vec<u8>),
     Dir {
         data_file_name: PathBuf,
+        htree_org_len: u64, // in blocks
         data: RWHashTree,
     },
     LnkInline(PathBuf),
@@ -79,6 +81,7 @@ pub struct Inode {
     encrypted: bool,
     fs_path: PathBuf,
     key_gen: KeyGen,
+    sb_meta: Arc<RwLock<(usize, usize)>>,
 }
 
 pub fn iid_to_htree_logi_pos(iid: InodeID) -> usize {
@@ -145,6 +148,7 @@ impl Inode {
         iid: InodeID,
         fs_path: &PathBuf,
         encrypted: bool,
+        sb_meta: Arc<RwLock<(usize, usize)>>,
     ) -> FsResult<Self> {
         let di_base = unsafe {
             &*(raw.as_ptr() as *const DInodeBase)
@@ -166,6 +170,7 @@ impl Inode {
             encrypted,
             fs_path: fs_path.clone(),
             key_gen: KeyGen::new(),
+            sb_meta,
         };
 
         ret.ext = match tp {
@@ -193,15 +198,16 @@ impl Inode {
                     let mut back = FileStorage::new(&p, true)?;
                     assert_eq!(back.get_len()?, blk2byte!(di.len));
                     assert_eq!(
-                        di.base.size.div_ceil(BLK_SZ as u64),
+                        mht::get_phy_nr_blk(di.base.size.div_ceil(BLK_SZ as u64)),
                         blk2byte!(di.len)
                     );
                     InodeExt::Reg {
                         data_file_name: fname.into(),
+                        htree_org_len: di.len,
                         data: RWHashTree::new(
                             None,
                             Box::new(back),
-                            di.len,
+                            di.base.size.div_ceil(BLK_SZ as u64),
                             Some(FSMode::from_key_entry(di.data_file_ke.clone(), encrypted)),
                             encrypted,
                         )
@@ -221,15 +227,16 @@ impl Inode {
                 let mut back = FileStorage::new(&p, true)?;
                 assert_eq!(back.get_len()?, blk2byte!(di.len));
                 assert_eq!(
-                    di.base.size.div_ceil(BLK_SZ as u64),
+                    mht::get_phy_nr_blk(di.base.size.div_ceil(BLK_SZ as u64)),
                     blk2byte!(di.len)
                 );
                 InodeExt::Dir {
                     data_file_name: fname.into(),
+                    htree_org_len: di.len,
                     data: RWHashTree::new(
                         None,
                         Box::new(back),
-                        di.len,
+                        di.base.size.div_ceil(BLK_SZ as u64),
                         Some(FSMode::from_key_entry(di.data_file_ke.clone(), encrypted)),
                         encrypted,
                     )
@@ -292,14 +299,16 @@ impl Inode {
 
     pub fn new(
         iid: InodeID,
+        fiid: InodeID,
         tp: FileType,
         uid: u32,
         gid: u32,
         perm: u16, // only last 9 bits conuts
         fs_path: &PathBuf,
         encrypted: bool,
+        sb_meta: Arc<RwLock<(usize, usize)>>,
     ) -> FsResult<Self> {
-        Ok(Self {
+        let mut inode = Self {
             iid,
             tp,
             perm: FilePerm::from_bits(perm).unwrap(),
@@ -310,27 +319,62 @@ impl Inode {
             ctime: SystemTime::now(),
             mtime: SystemTime::now(),
             size: 0,
-            ext: match tp {
-                FileType::Reg => InodeExt::RegInline(Vec::new()),
-                FileType::Dir => {
-                    let (data_file_name, backend) = new_data_storage(fs_path.clone(), iid)?;
-                    InodeExt::Dir {
-                        data_file_name,
-                        data: RWHashTree::new(
-                            None,
-                            backend,
-                            0,
-                            None,
-                            encrypted,
-                        )
-                    }
-                }
-                FileType::Lnk => InodeExt::LnkInline(PathBuf::new()),
-            },
+            ext: InodeExt::LnkInline(PathBuf::new()),
             encrypted,
             fs_path: fs_path.clone(),
             key_gen: KeyGen::new(),
-        })
+            sb_meta,
+        };
+        inode.ext = match tp {
+            FileType::Reg => InodeExt::RegInline(Vec::new()),
+            FileType::Dir => {
+                let (data_file_name, backend) = new_data_storage(fs_path.clone(), iid)?;
+                let mut data = RWHashTree::new(
+                    None,
+                    backend,
+                    0,
+                    None,
+                    encrypted,
+                );
+                // write . and .. dirent
+                let mut dot = DiskDirEntry {
+                    ipos: iid,
+                    tp: tp.into(),
+                    len: 1,
+                    name: [0u8; DIRENT_NAME_MAX],
+                };
+                dot.name[..1].copy_from_slice(".".as_bytes());
+                let mut dotdot = DiskDirEntry {
+                    ipos: fiid,
+                    tp: tp.into(),
+                    len: 2,
+                    name: [0u8; DIRENT_NAME_MAX],
+                };
+                dotdot.name[..1].copy_from_slice("..".as_bytes());
+                let dde = vec![dot, dotdot];
+                data.write_exact(0,
+                    unsafe {
+                        std::slice::from_raw_parts(
+                            dde.as_ptr() as *const u8,
+                            dde.len() * DIRENT_SZ,
+                        )
+                    }
+                )?;
+                inode.size = 2 * DIRENT_SZ;
+
+                assert_eq!(mht::get_phy_nr_blk(data.length), 2);
+                nf_nb_change(&inode.sb_meta, 1, 2)?;
+
+                InodeExt::Dir {
+                    data_file_name,
+                    htree_org_len: 2,
+                    data,
+                }
+            }
+            FileType::Lnk => InodeExt::LnkInline(PathBuf::new()),
+        };
+
+        Ok(inode)
     }
 
     pub fn read_data(&mut self, offset: usize, to: &mut [u8]) -> FsResult<usize> {
@@ -375,13 +419,13 @@ impl Inode {
     fn possible_expand_to_htree(&mut self, write_end: usize) -> FsResult<()> {
         if let InodeExt::RegInline(_) = &self.ext {
             if write_end > REG_INLINE_EXPAND_THRESHOLD {
-                self.expand_to_htree()?;
+                self.reg_expand_to_htree()?;
             }
         }
         Ok(())
     }
 
-    fn expand_to_htree(&mut self) -> FsResult<()> {
+    fn reg_expand_to_htree(&mut self) -> FsResult<()> {
         let (data_file_name, htree) = match &self.ext {
             InodeExt::RegInline(data) => {
                 let (data_file_name, backend) = new_data_storage(self.fs_path.clone(), self.iid)?;
@@ -393,6 +437,9 @@ impl Inode {
                     self.encrypted,
                 );
                 assert_eq!(htree.write_exact(0, data)?, data.len());
+
+                nf_nb_change(&self.sb_meta, 1, mht::get_phy_nr_blk(htree.length) as isize)?;
+
                 (data_file_name, htree)
             }
             _ => return Err(FsError::UnknownError),
@@ -400,6 +447,7 @@ impl Inode {
 
         self.ext = InodeExt::Reg {
             data_file_name,
+            htree_org_len: mht::get_phy_nr_blk(htree.length),
             data: htree,
         };
 
@@ -408,7 +456,7 @@ impl Inode {
 
     fn reg_shrink_to_inline(&mut self) -> FsResult<()> {
         let (d, file_to_remove) = match &mut self.ext {
-            InodeExt::Reg { data_file_name, data } =>{
+            InodeExt::Reg { data_file_name, data, .. } =>{
                 assert!(self.size <= REG_INLINE_DATA_MAX);
 
                 let mut d = vec![0u8; self.size];
@@ -419,7 +467,7 @@ impl Inode {
             _ => return Err(FsError::UnknownError),
         };
 
-        Self::remove_fs_file(&self.fs_path, &file_to_remove)?;
+        self.remove_fs_file(&file_to_remove)?;
 
         self.ext = InodeExt::RegInline(d);
 
@@ -447,7 +495,7 @@ impl Inode {
             iid: self.iid,
             size: match self.tp {
                 FileType::Reg => self.size,
-                FileType::Dir => self.size * size_of::<DirEntry>(),
+                FileType::Dir => self.size,
                 FileType::Lnk => 0,
             } as u64,
             blocks: if self.tp == FileType::Reg {
@@ -564,9 +612,9 @@ impl Inode {
                     tp: tp.into(),
                     name: String::from(name.to_str().unwrap()),
                 }.into();
-                let written = data.write_exact(self.size * DIRENT_SZ, dde.as_ref())?;
+                let written = data.write_exact(self.size, dde.as_ref())?;
                 assert_eq!(written, size_of_val(&dde));
-                self.size += 1;
+                self.size += DIRENT_SZ;
                 Ok(())
             }
             _ => Err(FsError::PermissionDenied),
@@ -597,17 +645,17 @@ impl Inode {
     pub fn remove_child(&mut self, name: &OsStr) -> FsResult<(InodeID, FileType)> {
         if let Some((pos, de)) = self.find_child_pos(name)? {
             if let InodeExt::Dir { data, .. } = &mut self.ext {
-                if pos != self.size - 1 {
+                if pos * DIRENT_SZ != self.size - DIRENT_SZ {
                     // read last dde
                     let mut last_dde = [0u8; DIRENT_SZ];
-                    let read = data.read_exact((self.size - 1) * DIRENT_SZ, &mut last_dde)?;
+                    let read = data.read_exact(self.size - DIRENT_SZ, &mut last_dde)?;
                     assert_eq!(read, DIRENT_SZ);
 
                     // write last dde to the removed place
                     let written = data.write_exact(pos * DIRENT_SZ, last_dde.as_ref())?;
                     assert_eq!(written, DIRENT_SZ);
                 }
-                self.size -= 1;
+                self.size -= DIRENT_SZ;
                 Ok((de.ipos, de.tp))
             } else {
                 Err(FsError::PermissionDenied)
@@ -665,6 +713,7 @@ impl Inode {
         Ok(mode)
     }
 
+    // return file changes,  block changes
     pub fn sync_data(&mut self) -> FsResult<()> {
         // htree to inline, inline to tree, no REG_INLINE_EXPAND_THRESHOLD
         match &mut self.ext {
@@ -675,7 +724,7 @@ impl Inode {
             }
             InodeExt::RegInline(_) => {
                 if self.size > REG_INLINE_DATA_MAX {
-                    self.expand_to_htree()?;
+                    self.reg_expand_to_htree()?;
                 }
             }
             _ => {},
@@ -721,13 +770,15 @@ impl Inode {
                         lnk_name: lnk_name.clone(),
                         data_file_name,
                         name_file_ke,
-                    }
+                    };
+
+                    nf_nb_change(&self.sb_meta, 1, 1)?;
                 }
             }
             _ => {},
-        }
+        };
         if let Some(f) = file_to_remove {
-            Self::remove_fs_file(&self.fs_path, &f)?;
+            self.remove_fs_file(&f)?;
         }
         Ok(())
     }
@@ -745,7 +796,7 @@ impl Inode {
         };
         let mut ib = [0u8; INODE_SZ];
         match &mut self.ext {
-            InodeExt::Reg { data_file_name, data } => {
+            InodeExt::Reg { data_file_name, htree_org_len, data } => {
                 let fname_ke = iid_hash(self.iid)?;
                 let fname = hex::encode_upper(fname_ke);
                 assert_eq!(fname.as_bytes(), data_file_name.as_os_str().as_encoded_bytes());
@@ -756,7 +807,8 @@ impl Inode {
                 inode.base = base;
                 inode.data_file = fname_ke;
                 inode.data_file_ke = data.get_cur_mode().into_key_entry();
-                inode.len = data.length;
+                inode.len = mht::get_phy_nr_blk(data.length);
+                nf_nb_change(&self.sb_meta, 0, inode.len as isize - *htree_org_len as isize)?;
             }
             InodeExt::RegInline(data) => {
                 assert!(data.len() <= REG_INLINE_DATA_MAX);
@@ -766,7 +818,7 @@ impl Inode {
                 inode.base = base;
                 inode.data[..data.len()].copy_from_slice(data);
             }
-            InodeExt::Dir { data_file_name, data } => {
+            InodeExt::Dir { data_file_name, htree_org_len, data } => {
                 let fname_ke = iid_hash(self.iid)?;
                 let fname = hex::encode_upper(fname_ke);
                 assert_eq!(fname.as_bytes(), data_file_name.as_os_str().as_encoded_bytes());
@@ -777,7 +829,8 @@ impl Inode {
                 inode.base = base;
                 inode.data_file = fname_ke;
                 inode.data_file_ke = data.get_cur_mode().into_key_entry();
-                inode.len = data.length;
+                inode.len = mht::get_phy_nr_blk(data.length);
+                nf_nb_change(&self.sb_meta, 0, inode.len as isize - *htree_org_len as isize)?;
             }
             InodeExt::Lnk { lnk_name, data_file_name, name_file_ke } => {
                 let fname_ke = iid_hash(self.iid)?;
@@ -814,21 +867,24 @@ impl Inode {
         self.sync_meta()
     }
 
-    fn remove_fs_file(fs_path: &PathBuf, fname: &Path) -> FsResult<()> {
-        let mut p = fs_path.clone();
+    fn remove_fs_file(&self, fname: &Path) -> FsResult<()> {
+        let mut p = self.fs_path.clone();
         p.push(fname);
+        let nr_blk = io_try!(fs::metadata(&p)).len().div_ceil(BLK_SZ as u64);
         io_try!(fs::remove_file(p));
+        nf_nb_change(&self.sb_meta, -1, -(nr_blk as isize))?;
         Ok(())
     }
 
+    // return whether remove a data file and removed file blocks
     pub fn remove_data_file(self) -> FsResult<()> {
-        let df_name = match self.ext {
+        let df_name = match &self.ext {
             InodeExt::Reg { data_file_name, .. } => data_file_name,
             InodeExt::Dir { data_file_name, .. } => data_file_name,
             InodeExt::Lnk { data_file_name, .. } => data_file_name,
             _ => return Ok(()),
         };
-        Self::remove_fs_file(&self.fs_path, &df_name)?;
+        self.remove_fs_file(&df_name)?;
         Ok(())
     }
 }

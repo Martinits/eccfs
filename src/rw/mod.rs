@@ -38,6 +38,7 @@ pub struct RWFS {
     icac: Mutex<ChannelLru<InodeID, RwLock<Inode>>>,
     de_cac: Option<Mutex<ChannelLru<String, InodeID>>>,
     key_gen: KeyGen,
+    sb_meta_for_inode: Arc<RwLock<(usize, usize)>>,
 }
 
 impl RWFS {
@@ -106,6 +107,8 @@ impl RWFS {
             mode.is_encrypted(),
         );
 
+        let sb_meta_for_inode = Arc::new(RwLock::new((sb.nr_data_file, sb.blocks)));
+
         Ok(RWFS {
             regen_root_key,
             path: path.to_path_buf(),
@@ -122,16 +125,16 @@ impl RWFS {
                 None
             },
             key_gen: KeyGen::new(),
+            sb_meta_for_inode,
         })
     }
 
     fn fetch_inode(&self, iid: InodeID) -> FsResult<Inode> {
-        let mut ib = [0u8; INODE_SZ];
-        let read = mutex_lock!(&self.inode_tbl).read_exact(
-            iid_to_htree_logi_pos(iid), &mut ib,
-        )?;
-        assert_eq!(read, INODE_SZ);
-        Inode::new_from_raw(&ib, iid, &self.path, self.mode.is_encrypted())
+        let ib = self.read_itbl(iid)?;
+        Inode::new_from_raw(
+            &ib, iid, &self.path, self.mode.is_encrypted(),
+            self.sb_meta_for_inode.clone(),
+        )
     }
 
     fn write_inode(&self, iid: InodeID, inode: Inode) -> FsResult<()> {
@@ -144,6 +147,15 @@ impl RWFS {
             iid_to_htree_logi_pos(iid), ib
         )?;
         Ok(())
+    }
+
+    fn read_itbl(&self, iid: InodeID) -> FsResult<InodeBytes> {
+        let mut ib = [0u8; INODE_SZ];
+        let read = mutex_lock!(self.inode_tbl).read_exact(
+            iid_to_htree_logi_pos(iid), &mut ib
+        )?;
+        assert_eq!(read, INODE_SZ);
+        Ok(ib)
     }
 
     fn get_inode(&self, iid: InodeID, dirty: bool) -> FsResult<Arc<RwLock<Inode>>> {
@@ -183,9 +195,14 @@ impl RWFS {
         // load inode
         let _ = self.get_inode(iid, false)?;
         let ainode = icac.flush_key(iid)?.unwrap();
+        let ino = ainode.into_inner().unwrap();
+
+        if ino.tp == FileType::Reg {
+            rwlock_write!(self.sb).files -= 1;
+        }
 
         // remove data file
-        ainode.into_inner().unwrap().remove_data_file()?;
+        ino.remove_data_file()?;
 
         // zero that disk range and reset bitmap
         self.write_itbl(iid, &ZERO_INODE)?;
@@ -222,10 +239,22 @@ impl FileSystem for RWFS {
         }
         {
             let mut lock = rwlock_write!(self.sb);
-            lock.ibitmap_len = ibitmap_blks.len();
+            let new_ib_len = ibitmap_blks.len();
+            nf_nb_change(
+                &self.sb_meta_for_inode,
+                0,
+                new_ib_len as isize - lock.ibitmap_len as isize
+            )?;
+            lock.ibitmap_len = new_ib_len;
             lock.ibitmap_ke = ibitmap_ke;
         }
 
+        // write sb_meta_for_inode back to superblock
+        {
+            let mut lock = rwlock_write!(self.sb);
+            lock.nr_data_file = rwlock_read!(self.sb_meta_for_inode).0;
+            lock.blocks = rwlock_read!(self.sb_meta_for_inode).1;
+        }
         // write superblock
         let mut sb_blk = rwlock_read!(self.sb).write()?;
         let mode = crypto_out(&mut sb_blk,
@@ -255,9 +284,7 @@ impl FileSystem for RWFS {
             for (iid, i) in inode {
                 let inode = i.into_inner().unwrap();
                 let ib = inode.destroy()?;
-                mutex_lock!(self.inode_tbl).write_exact(
-                    iid_to_htree_logi_pos(iid), &ib
-                )?;
+                self.write_itbl(iid, &ib)?;
             }
         }
 
@@ -268,7 +295,15 @@ impl FileSystem for RWFS {
 
         // flush itbl and store new ke into superblock
         let itbl_mode = mutex_lock!(self.inode_tbl).flush()?;
-        rwlock_write!(self.sb).itbl_ke = itbl_mode.into_key_entry();
+        let mut lock = rwlock_write!(self.sb);
+        lock.itbl_ke = itbl_mode.into_key_entry();
+        let new_itbl_len = mht::get_phy_nr_blk(mutex_lock!(self.inode_tbl).length) as usize;
+        nf_nb_change(
+            &self.sb_meta_for_inode,
+            0,
+            new_itbl_len as isize - lock.itbl_len as isize
+        )?;
+        lock.itbl_len = new_itbl_len;
 
         Ok(())
     }
@@ -297,9 +332,7 @@ impl FileSystem for RWFS {
         let mut icac = mutex_lock!(&self.icac);
         if let Some(ainode) = icac.flush_key(iid)? {
             let ib = rwlock_write!(ainode).sync_meta()?;
-            mutex_lock!(self.inode_tbl).write_exact(
-                iid_to_htree_logi_pos(iid), &ib
-            )?;
+            self.write_itbl(iid, &ib)?;
         }
 
         Ok(())
@@ -320,13 +353,18 @@ impl FileSystem for RWFS {
     ) -> FsResult<InodeID> {
         let iid = mutex_lock!(self.ibitmap).alloc()?;
         let inode = Inode::new(
-            iid, ftype, uid, gid, perm & PERM_MASK,
-            &self.path, self.mode.is_encrypted()
+            iid, parent, ftype, uid, gid, perm & PERM_MASK,
+            &self.path, self.mode.is_encrypted(), self.sb_meta_for_inode.clone(),
         )?;
 
         rwlock_write!(self.get_inode(parent, true)?).add_child(name, ftype, iid)?;
 
         self.insert_inode(iid, inode)?;
+
+        if ftype == FileType::Reg {
+            rwlock_write!(self.sb).files += 1;
+        }
+
         Ok(iid)
     }
 
@@ -365,8 +403,8 @@ impl FileSystem for RWFS {
         let iid = mutex_lock!(self.ibitmap).alloc()?;
         // symlink permissions are always 0777 since on Linux they are not used anyway
         let mut inode = Inode::new(
-            iid, FileType::Lnk, uid, gid, PERM_MASK,
-            &self.path, self.mode.is_encrypted()
+            iid, parent, FileType::Lnk, uid, gid, PERM_MASK,
+            &self.path, self.mode.is_encrypted(), self.sb_meta_for_inode.clone(),
         )?;
         inode.set_link(to)?;
 
@@ -415,4 +453,14 @@ impl FileSystem for RWFS {
     ) -> FsResult<()> {
         rwlock_write!(self.get_inode(iid, true)?).fallocate(mode, offset, len)
     }
+}
+
+// change nr_data_file and blocks in superblock
+pub fn nf_nb_change(
+    pointer: &Arc<RwLock<(usize, usize)>>, f: isize, b: isize
+) -> FsResult<()> {
+    let mut lock = rwlock_write!(pointer);
+    lock.0 = lock.0.checked_add_signed(f).unwrap();
+    lock.1 = lock.1.checked_add_signed(b).unwrap();
+    Ok(())
 }
