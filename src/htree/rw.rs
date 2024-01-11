@@ -134,6 +134,7 @@ impl RWHashTree {
             if !mht::is_idx(pos) {
                 if let Some(apay) = self.cache.get_blk_try(pos)? {
                     rwlock_write!(apay).fill(0);
+                    self.cache.mark_dirty(pos)?;
                 } else {
                     self.write_back(pos, [0u8; BLK_SZ])?;
                 }
@@ -223,12 +224,9 @@ impl RWHashTree {
         &mut self, pos: u64, mode: FSMode
     ) -> FsResult<Arc<RWPayLoad>> {
         let mut blk = self.backend_read(pos, mode)?;
-        let dirty = self.possible_ke_wb(pos, &mut blk)?;
+        self.possible_ke_wb(pos, &mut blk)?;
 
         let (apay, wb) = self.cache.insert_and_get(pos, blk)?;
-        if dirty {
-            self.cache.mark_dirty(pos)?;
-        }
 
         if let Some((pos, blk)) = wb {
             // need write back
@@ -510,10 +508,9 @@ impl RWHashTree {
         Ok(())
     }
 
-    // return whether make changes to this block or not
-    fn possible_ke_wb(&mut self, pos: u64, blk: &mut Block) -> FsResult<bool> {
+    fn possible_ke_wb(&mut self, pos: u64, blk: &mut Block) -> FsResult<()> {
         if !mht::is_idx(pos) {
-            return Ok(false);
+            return Ok(());
         }
 
         let mut dirty = false;
@@ -546,7 +543,11 @@ impl RWHashTree {
             child_phy = mht::next_data_sibling_phy(child_phy);
         }
 
-        Ok(dirty)
+        if dirty {
+            self.cache.mark_dirty(pos)?;
+        }
+
+        Ok(())
     }
 }
 
