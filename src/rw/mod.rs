@@ -371,6 +371,12 @@ impl FileSystem for RWFS {
     fn link(&self, parent: InodeID, name: &OsStr, linkto: InodeID) -> FsResult<()> {
         let to = self.get_inode(linkto, true)?;
         let mut lock = rwlock_write!(to);
+
+        // hard links not allowed for directories
+        if lock.tp == FileType::Dir {
+            return Err(FsError::PermissionDenied);
+        }
+
         lock.nlinks += 1;
         let tp = lock.tp;
 
