@@ -259,7 +259,7 @@ impl Inode {
             ctime: self.ctime,
             mtime: self.mtime,
             ftype: self.tp,
-            perm: self.perm.bits(),
+            perm: self.perm,
             nlinks: self.nlinks,
             uid: self.uid,
             gid: self.gid,

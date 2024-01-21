@@ -310,7 +310,7 @@ impl Filesystem for EccFs {
 
     fn access(&mut self, req: &Request<'_>, ino: u64, mask: i32, reply: ReplyEmpty) {
         let meta = fuse_try!(self.fs.get_meta(ino), reply);
-        if check_access(meta.uid, meta.gid, meta.perm, req.uid(), req.gid(), mask) {
+        if check_access(meta.uid, meta.gid, meta.perm.bits(), req.uid(), req.gid(), mask) {
             debug!("Access Ok");
             reply.ok();
         } else {

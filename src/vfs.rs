@@ -213,7 +213,7 @@ impl Into<fuser::FileType> for FileType {
 }
 
 bitflags! {
-    #[derive(Clone, Copy)]
+    #[derive(Debug, Eq, PartialEq, Clone, Copy)]
     pub struct FilePerm: u16 {
         const U_R = 0o0400;
         const U_W = 0o0200;
@@ -272,7 +272,7 @@ pub struct Metadata {
     /// Type of file
     pub ftype: FileType,
     /// Permission
-    pub perm: u16,
+    pub perm: FilePerm,
     /// Number of hard links
     pub nlinks: u16,
     /// User ID
@@ -293,7 +293,7 @@ impl Into<fuser::FileAttr> for Metadata {
             // BAD: mtime is the oldest time among the three, use it as crtime
             crtime: self.mtime,
             kind: self.ftype.into(),
-            perm: self.perm,
+            perm: self.perm.bits(),
             nlink: self.nlinks as u32,
             uid: self.uid,
             gid: self.gid,
