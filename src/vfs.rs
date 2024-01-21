@@ -1,7 +1,7 @@
 use crate::*;
-use std::ffi::OsStr;
+pub use std::ffi::OsStr;
 use std::time::SystemTime;
-use std::path::{PathBuf, Path};
+pub use std::path::{PathBuf, Path};
 use bitflags::bitflags;
 
 /// for ROFS, 16bit block offset + 48bit block position
@@ -75,6 +75,10 @@ pub trait FileSystem: Sync + Send {
         Err(FsError::Unsupported)
     }
 
+    fn iset_link(&self, _iid: InodeID, _new_lnk: &OsStr) -> FsResult<()> {
+        Err(FsError::Unsupported)
+    }
+
     /// sync metadata of this inode
     fn isync_meta(&self, _iid: InodeID) -> FsResult<()> {
         Err(FsError::Unsupported)
@@ -93,7 +97,7 @@ pub trait FileSystem: Sync + Send {
         _ftype: FileType,
         _uid: u32,
         _gid: u32,
-        _perm: u16,
+        _perm: FilePerm,
     ) -> FsResult<InodeID> {
         Err(FsError::Unsupported)
     }
@@ -139,7 +143,7 @@ pub trait FileSystem: Sync + Send {
         &self,
         _iid: InodeID,
         _offset: usize,
-        _num: usize,
+        _num: usize, // 0 means as many as possible
     ) -> FsResult<Vec<(InodeID, PathBuf, FileType)>> {
         Err(FsError::Unsupported)
     }
@@ -170,9 +174,9 @@ pub trait FileSystem: Sync + Send {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
 pub enum FileType {
-    Reg,
+    #[default] Reg,
     Dir,
     Lnk,
 }
@@ -209,6 +213,7 @@ impl Into<fuser::FileType> for FileType {
 }
 
 bitflags! {
+    #[derive(Clone, Copy)]
     pub struct FilePerm: u16 {
         const U_R = 0o0400;
         const U_W = 0o0200;

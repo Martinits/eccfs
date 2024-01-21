@@ -303,7 +303,7 @@ impl Inode {
         tp: FileType,
         uid: u32,
         gid: u32,
-        perm: u16, // only last 9 bits conuts
+        perm: FilePerm,
         fs_path: &PathBuf,
         encrypted: bool,
         sb_meta: Arc<RwLock<(usize, usize)>>,
@@ -311,7 +311,7 @@ impl Inode {
         let mut inode = Self {
             iid,
             tp,
-            perm: FilePerm::from_bits(perm).unwrap(),
+            perm,
             nlinks: 1,
             uid,
             gid,
@@ -547,9 +547,16 @@ impl Inode {
         Ok(())
     }
 
-    pub fn read_child(&mut self, offset: usize, num: usize) -> FsResult<Vec<DirEntry>> {
+    pub fn read_child(
+        &mut self, offset: usize, num: usize, // 0 means as many as possible
+    ) -> FsResult<Vec<DirEntry>> {
         match &mut self.ext {
             InodeExt::Dir { data, .. } => {
+                let num = if num == 0 {
+                    self.size / DIRENT_SZ - offset
+                } else {
+                    num.min(self.size / DIRENT_SZ - offset)
+                };
                 let de_list: Vec<DiskDirEntry> = Vec::with_capacity(num);
                 let len = num * DIRENT_SZ;
                 let read = data.read_exact(

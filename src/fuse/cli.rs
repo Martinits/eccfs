@@ -139,7 +139,7 @@ impl Filesystem for EccFs {
         let gid = req.gid();
         let iid = fuse_try!(self.fs.create(
             parent, name, vfs::FileType::Dir,
-            uid, gid, perm
+            uid, gid, FilePerm::from_bits(perm).unwrap(),
         ), reply);
         let meta = fuse_try!(self.fs.get_meta(iid), reply);
         reply.entry(&DEFAULT_TTL, &meta.into(), 0);
@@ -334,7 +334,7 @@ impl Filesystem for EccFs {
         let gid = req.gid();
         let iid = fuse_try!(self.fs.create(
             parent, name, tp,
-            uid, gid, perm
+            uid, gid, FilePerm::from_bits(perm).unwrap(),
         ), reply);
         let meta = fuse_try!(self.fs.get_meta(iid), reply);
         reply.created(&DEFAULT_TTL, &meta.into(), 0, 0, 0);

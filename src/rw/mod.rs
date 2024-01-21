@@ -328,6 +328,10 @@ impl FileSystem for RWFS {
         rwlock_read!(self.get_inode(iid, false)?).get_link()
     }
 
+    fn iset_link(&self, iid: InodeID, new_lnk: &OsStr) -> FsResult<()> {
+        rwlock_write!(self.get_inode(iid, true)?).set_link(Path::new(new_lnk))
+    }
+
     fn isync_meta(&self, iid: InodeID) -> FsResult<()> {
         let mut icac = mutex_lock!(&self.icac);
         if let Some(ainode) = icac.flush_key(iid)? {
@@ -349,11 +353,11 @@ impl FileSystem for RWFS {
         ftype: FileType,
         uid: u32,
         gid: u32,
-        perm: u16,
+        perm: FilePerm,
     ) -> FsResult<InodeID> {
         let iid = mutex_lock!(self.ibitmap).alloc()?;
         let inode = Inode::new(
-            iid, parent, ftype, uid, gid, perm & PERM_MASK,
+            iid, parent, ftype, uid, gid, perm,
             &self.path, self.mode.is_encrypted(), self.sb_meta_for_inode.clone(),
         )?;
 
@@ -409,7 +413,7 @@ impl FileSystem for RWFS {
         let iid = mutex_lock!(self.ibitmap).alloc()?;
         // symlink permissions are always 0777 since on Linux they are not used anyway
         let mut inode = Inode::new(
-            iid, parent, FileType::Lnk, uid, gid, PERM_MASK,
+            iid, parent, FileType::Lnk, uid, gid, FilePerm::from_bits(PERM_MASK).unwrap(),
             &self.path, self.mode.is_encrypted(), self.sb_meta_for_inode.clone(),
         )?;
         inode.set_link(to)?;

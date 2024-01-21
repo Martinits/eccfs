@@ -278,7 +278,7 @@ impl Inode {
     pub fn get_entry_list_info<'a>(
         &'a self,
         offset: usize,
-        num: usize,
+        num: usize, // 0 means as many as possible
     ) -> FsResult<Option<DirEntryInfo<'a>>> {
         if offset >= self.size {
             return Ok(None);
@@ -288,13 +288,21 @@ impl Inode {
             InodeExt::Dir{de_list_start, ..} => {
                 DirEntryInfo::External(
                     *de_list_start + (size_of::<DirEntry>() * offset) as u64,
-                    num.min(self.size - offset)
+                    if num == 0 {
+                        self.size - offset
+                    } else {
+                        num.min(self.size - offset)
+                    }
                 )
             },
             InodeExt::DirInline { de_list } => {
                 assert!(offset < de_list.len());
-                let to = de_list.len().min(offset + num);
-                DirEntryInfo::Inline(&de_list[offset..to])
+                if num == 0 {
+                    DirEntryInfo::Inline(&de_list[offset..])
+                } else {
+                    let to = de_list.len().min(offset + num);
+                    DirEntryInfo::Inline(&de_list[offset..to])
+                }
             },
             _ => return Err(FsError::PermissionDenied),
         };

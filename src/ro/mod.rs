@@ -242,6 +242,10 @@ impl ROFS {
 }
 
 impl FileSystem for ROFS {
+    fn destroy(&mut self) -> FsResult<FSMode> {
+        Ok(self.mode.clone())
+    }
+
     fn finfo(&self) -> FsResult<FsInfo> {
         rwlock_read!(self.sb).get_fsinfo()
     }
