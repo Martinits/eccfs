@@ -12,8 +12,8 @@ pub struct InodePos(usize, InodeID);
 pub struct Inode {
     tp: FileType,
     // last valid ancestor's inode in RW layer
-    // if all ancestor is present, it's same as this inode id, i.e. ipos[0]'s iid,
-    // and in this circumstance, ipos[0] must be RW layer
+    // if ipos[0] is RW layer, all ancestor and itself is present,
+    // then rw_fiid is the same as this inode id, i.e. ipos[0]'s iid,
     rw_fiid: InodeID,
     // last valid ancestor's idx in full_path
     rw_fidx: usize,
@@ -211,8 +211,7 @@ impl OverlayFS {
             while let Some((child_innd, name, tp)) = fs.next_entry(*innd, offset)? {
                 if *lidx == RW_LAYER_IDX && is_black_out_file(name.as_os_str()) {
                     blk_out_files.insert(rm_black_out_prefix(&name));
-                }
-                if let Some((upper_tp, iid)) = map.get(&name) {
+                } else if let Some((upper_tp, iid)) = map.get(&name) {
                     // if a child already found in upper layers and it's a dir
                     // we need to add this layer to ipos list
                     if tp == FileType::Dir && *upper_tp == FileType::Dir {
@@ -235,6 +234,8 @@ impl OverlayFS {
 
                     let (rw_fiid, rw_fidx) = {
                         if *lidx == RW_LAYER_IDX && parent.rw_fiid == *innd {
+                            // actually is parent has a RW layer,
+                            // parent.rw_fiid == *innd must hold
                             (child_innd, full_path.len() - 1)
                         } else {
                             (parent.rw_fiid, parent.rw_fidx)
@@ -437,9 +438,11 @@ impl FileSystem for OverlayFS {
         full_path.push((name.into(), perm, uid, gid));
         let new_ino = Inode {
             tp: ftype,
-            rw_fiid: innd,
+            rw_fiid: new_innd,
             rw_fidx: full_path.len()-1,
             full_path,
+            // create sth means this name does not exist in any lower layers,
+            // or it is blacked out, so the new overlay inode has no lower layers
             ipos: vec![InodePos(RW_LAYER_IDX, new_innd)],
             black_out_ro: ino.black_out_ro | blk_out_file_exist,
             children: None,
@@ -528,6 +531,7 @@ impl FileSystem for OverlayFS {
         let ino = lock.0.get_mut(&parent).unwrap();
 
         let InodePos(lidx, innd) = ino.ipos[0].clone();
+        assert_eq!(lidx, RW_LAYER_IDX);
         let (new_innd, blk_out_file_exist) = {
             let lock = rwlock_read!(self.layers[lidx]);
             (
@@ -540,7 +544,7 @@ impl FileSystem for OverlayFS {
         full_path.push((name.into(), FilePerm::from_bits(0o777).unwrap(), uid, gid));
         let new_ino = Inode {
             tp: FileType::Lnk,
-            rw_fiid: innd,
+            rw_fiid: new_innd,
             rw_fidx: full_path.len()-1,
             full_path,
             ipos: vec![InodePos(RW_LAYER_IDX, new_innd)],
