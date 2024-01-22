@@ -170,11 +170,19 @@ impl OverlayFS {
         Ok(())
     }
 
+    fn set_black_out_ro_flag(&self, iid: InodeID) -> FsResult<()> {
+        let mut lock = rwlock_write!(self.icac);
+        let ino = lock.0.get_mut(&iid).unwrap();
+        ino.black_out_ro = true;
+        Ok(())
+    }
+
     fn ensure_black_out_file(
         &self,
         fs: &RwLockReadGuard<'_, Box<dyn FileSystem>>,
         parent: InodeID,
         name: &OsStr,
+        iid: InodeID,
     ) -> FsResult<()> {
         let blk_name = black_out_file_of(name);
         if fs.lookup(parent, blk_name.as_os_str())?.is_none() {
@@ -183,6 +191,8 @@ impl OverlayFS {
                 parent, blk_name.as_os_str(),
                 FileType::Reg, uid, gid, FilePerm::from_bits(0o000).unwrap(),
             )?;
+            // set black out ro for this child
+            self.set_black_out_ro_flag(iid)?;
         }
         Ok(())
     }
@@ -465,6 +475,7 @@ impl FileSystem for OverlayFS {
 
         self.ensure_copy_up(parent)?;
         self.ensure_copy_up(linkto)?;
+        self.ensure_children_cached(parent)?;
 
         let mut lock = rwlock_write!(self.icac);
         let to = lock.0.get(&linkto).unwrap();
@@ -492,6 +503,12 @@ impl FileSystem for OverlayFS {
         }
 
         self.ensure_copy_up(parent)?;
+        self.ensure_children_cached(parent)?;
+
+        let child_iid = self.lookup(parent, name)?.ok_or(
+            FsError::NotFound
+        )?;
+
         let mut lock = rwlock_write!(self.icac);
         let fino = lock.0.get_mut(&parent).unwrap();
         let InodePos(lidx, innd) = fino.ipos[0].clone();
@@ -501,7 +518,7 @@ impl FileSystem for OverlayFS {
         match fs.unlink(parent, name) {
             Ok(_) | Err(FsError::NotFound) => {
                 // if black out file not exists, create one
-                self.ensure_black_out_file(&fs, innd, name)?;
+                self.ensure_black_out_file(&fs, innd, name, child_iid)?;
             }
             Err(e) => return Err(e),
         }
@@ -527,6 +544,8 @@ impl FileSystem for OverlayFS {
         }
 
         self.ensure_copy_up(parent)?;
+        self.ensure_children_cached(parent)?;
+
         let mut lock = rwlock_write!(self.icac);
         let ino = lock.0.get_mut(&parent).unwrap();
 
@@ -589,6 +608,8 @@ impl FileSystem for OverlayFS {
 
         self.ensure_copy_up(from)?;
         self.ensure_copy_up(to)?;
+        self.ensure_children_cached(from)?;
+        self.ensure_children_cached(to)?;
 
         let from_ino = lock.0.get_mut(&from).unwrap();
         assert_eq!(from_ino.tp, FileType::Dir);
@@ -620,7 +641,7 @@ impl FileSystem for OverlayFS {
         to_ino.children.as_mut().unwrap().insert(PathBuf::from(newname), entry);
 
         // create black out file for oldname
-        self.ensure_black_out_file(&fs, from_innd, name)?;
+        self.ensure_black_out_file(&fs, from_innd, name, old_iid)?;
 
         Ok(())
     }
