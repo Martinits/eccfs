@@ -16,7 +16,7 @@ pub struct Inode {
     // then rw_fiid is the same as this inode id, i.e. ipos[0]'s iid,
     rw_fiid: InodeID,
     // last valid ancestor's idx in full_path
-    rw_fidx: usize,
+    rw_fidx: isize,
     // full path from root dir, with perm, uid, gid
     full_path: Vec<(OsString, FilePerm, u32, u32)>,
     // existing inodes in the lower layers
@@ -60,24 +60,35 @@ fn rm_black_out_prefix(name: &PathBuf) -> PathBuf {
 
 impl OverlayFS {
     pub fn new(
-        layers: Vec<Box<dyn FileSystem>>,
+        upper: Box<dyn FileSystem>,
+        mut lower: Vec<Box<dyn FileSystem>>,
     ) -> FsResult<Self> {
         // prepare root dir
-        // TODO:
+        lower.insert(RW_LAYER_IDX, upper);
+        let layers = lower;
+
+        let mut ipos = vec![];
+        for (i, layer) in layers.iter().enumerate() {
+            let meta = layer.get_meta(ROOT_INODE_ID)?;
+            if meta.ftype != FileType::Dir {
+                return Err(FsError::NotADirectory);
+            }
+            ipos.push(InodePos(i, ROOT_INODE_ID));
+        }
+
         let root_inode = Inode {
             tp: FileType::Dir,
-            rw_fiid: 0,
-            rw_fidx: 0,
-            full_path: vec![
-                ("/".into(), FilePerm::from_bits(0o777).unwrap(), 0, 0)
-            ],
-            ipos: Vec::new(),
-            black_out_ro: false,
+            rw_fiid: ROOT_INODE_ID,
+            rw_fidx: -1,
+            full_path: vec![],
+            ipos,
+            black_out_ro: false, // root inode of lower layers must not be blacked
             children: None,
         };
 
         let mut map = HashMap::new();
         map.insert(ROOT_INODE_ID, root_inode);
+
 
         Ok(Self {
             layers: layers.into_iter().map(
@@ -101,12 +112,12 @@ impl OverlayFS {
         let mut lock = rwlock_write!(self.icac);
         let ino = lock.0.get_mut(&iid).unwrap();
 
-        if ino.rw_fidx == ino.full_path.len() - 1 {
+        if ino.rw_fidx as usize == ino.full_path.len() - 1 {
             return Ok(())
         }
 
         // crate all intermediate dirs
-        let mut idx = ino.rw_fidx + 1;
+        let mut idx = ino.rw_fidx as usize + 1;
         let mut father = ino.rw_fiid;
         let rwfs_lock = rwlock_read!(self.layers[RW_LAYER_IDX]);
         while idx < ino.full_path.len()-1 {
@@ -164,7 +175,7 @@ impl OverlayFS {
             }
         }
 
-        ino.rw_fidx= ino.full_path.len() - 1;
+        ino.rw_fidx = ino.full_path.len() as isize - 1;
         ino.rw_fiid = new_iid;
 
         Ok(())
@@ -246,7 +257,7 @@ impl OverlayFS {
                         if *lidx == RW_LAYER_IDX && parent.rw_fiid == *innd {
                             // actually is parent has a RW layer,
                             // parent.rw_fiid == *innd must hold
-                            (child_innd, full_path.len() - 1)
+                            (child_innd, full_path.len() as isize - 1)
                         } else {
                             (parent.rw_fiid, parent.rw_fidx)
                         }
@@ -449,7 +460,7 @@ impl FileSystem for OverlayFS {
         let new_ino = Inode {
             tp: ftype,
             rw_fiid: new_innd,
-            rw_fidx: full_path.len()-1,
+            rw_fidx: full_path.len() as isize - 1,
             full_path,
             // create sth means this name does not exist in any lower layers,
             // or it is blacked out, so the new overlay inode has no lower layers
@@ -564,7 +575,7 @@ impl FileSystem for OverlayFS {
         let new_ino = Inode {
             tp: FileType::Lnk,
             rw_fiid: new_innd,
-            rw_fidx: full_path.len()-1,
+            rw_fidx: full_path.len() as isize - 1,
             full_path,
             ipos: vec![InodePos(RW_LAYER_IDX, new_innd)],
             black_out_ro: ino.black_out_ro | blk_out_file_exist,
