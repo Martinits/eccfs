@@ -418,9 +418,10 @@ impl FileSystem for OverlayFS {
             return Err(FsError::AlreadyExists);
         }
 
+        self.ensure_children_cached(parent)?;
         self.ensure_copy_up(parent)?;
-        let lock = rwlock_read!(self.icac);
-        let ino = lock.0.get(&parent).unwrap();
+        let mut lock = rwlock_write!(self.icac);
+        let ino = lock.0.get_mut(&parent).unwrap();
         assert_eq!(ino.tp, FileType::Dir);
 
         let InodePos(lidx, innd) = ino.ipos[0];
@@ -444,7 +445,11 @@ impl FileSystem for OverlayFS {
             children: None,
         };
 
-        self.insert_inode(new_ino)
+        let new_iid = self.insert_inode(new_ino)?;
+
+        ino.children.as_mut().unwrap().insert(name.into(), (ftype, new_iid));
+
+        Ok(new_iid)
     }
 
     fn link(&self, parent: InodeID, name: &OsStr, linkto: InodeID) -> FsResult<()> {
@@ -458,19 +463,23 @@ impl FileSystem for OverlayFS {
         self.ensure_copy_up(parent)?;
         self.ensure_copy_up(linkto)?;
 
-        let lock = rwlock_read!(self.icac);
+        let mut lock = rwlock_write!(self.icac);
         let to = lock.0.get(&linkto).unwrap();
-        if to.tp == FileType::Dir {
+        let tp = to.tp;
+        if tp == FileType::Dir {
             return Err(FsError::IsADirectory);
         }
         let InodePos(to_lidx, to_innd) = to.ipos[0].clone();
         assert_eq!(to_lidx, RW_LAYER_IDX);
 
-        let fino = lock.0.get(&parent).unwrap();
+        let fino = lock.0.get_mut(&parent).unwrap();
         let InodePos(f_lidx, f_innd) = fino.ipos[0].clone();
         assert_eq!(f_lidx, RW_LAYER_IDX);
 
         rwlock_read!(self.layers[f_lidx]).link(f_innd, name, to_innd)?;
+
+        fino.children.as_mut().unwrap().insert(name.into(), (tp, linkto));
+
         Ok(())
     }
 
@@ -480,19 +489,22 @@ impl FileSystem for OverlayFS {
         }
 
         self.ensure_copy_up(parent)?;
-        let lock = rwlock_read!(self.icac);
-        let fino = lock.0.get(&parent).unwrap();
+        let mut lock = rwlock_write!(self.icac);
+        let fino = lock.0.get_mut(&parent).unwrap();
         let InodePos(lidx, innd) = fino.ipos[0].clone();
         assert_eq!(lidx, RW_LAYER_IDX);
 
-        let lock = rwlock_read!(self.layers[lidx]);
-        match lock.unlink(parent, name) {
+        let fs = rwlock_read!(self.layers[lidx]);
+        match fs.unlink(parent, name) {
             Ok(_) | Err(FsError::NotFound) => {
                 // if black out file not exists, create one
-                self.ensure_black_out_file(&lock, innd, name)?;
+                self.ensure_black_out_file(&fs, innd, name)?;
             }
             Err(e) => return Err(e),
         }
+
+        fino.children.as_mut().unwrap().remove(&PathBuf::from(name));
+
         Ok(())
     }
 
@@ -512,8 +524,8 @@ impl FileSystem for OverlayFS {
         }
 
         self.ensure_copy_up(parent)?;
-        let lock = rwlock_read!(self.icac);
-        let ino = lock.0.get(&parent).unwrap();
+        let mut lock = rwlock_write!(self.icac);
+        let ino = lock.0.get_mut(&parent).unwrap();
 
         let InodePos(lidx, innd) = ino.ipos[0].clone();
         let (new_innd, blk_out_file_exist) = {
@@ -536,7 +548,11 @@ impl FileSystem for OverlayFS {
             children: None,
         };
 
-        self.insert_inode(new_ino)
+        let new_iid = self.insert_inode(new_ino)?;
+
+        ino.children.as_mut().unwrap().insert(name.into(), (FileType::Lnk, new_iid));
+
+        Ok(new_iid)
     }
 
     fn rename(
@@ -554,7 +570,7 @@ impl FileSystem for OverlayFS {
             return Err(FsError::AlreadyExists);
         }
 
-        let lock = rwlock_read!(self.icac);
+        let mut lock = rwlock_write!(self.icac);
 
         let old_iid = if let Some(old_iid) = self.lookup(from, name)? {
             let old_ino = lock.0.get(&old_iid).unwrap();
@@ -570,7 +586,7 @@ impl FileSystem for OverlayFS {
         self.ensure_copy_up(from)?;
         self.ensure_copy_up(to)?;
 
-        let from_ino = lock.0.get(&from).unwrap();
+        let from_ino = lock.0.get_mut(&from).unwrap();
         assert_eq!(from_ino.tp, FileType::Dir);
         let InodePos(from_lidx, from_innd) = from_ino.ipos[0].clone();
         assert_eq!(from_lidx, RW_LAYER_IDX);
@@ -578,18 +594,27 @@ impl FileSystem for OverlayFS {
 
         self.ensure_copy_up(old_iid)?;
 
-        if from == to {
+        // remove cached old child
+        let from_children = from_ino.children.as_mut().unwrap();
+        let entry = from_children.remove(&PathBuf::from(name)).unwrap();
+
+        let (to_innd, to_ino) = if from == to {
             // from and to are same dir
-            fs.rename(from_innd, name, from_innd, newname)?;
+            (from_innd, from_ino)
         } else {
             // from and to are different dir
-            let to_ino = lock.0.get(&to).unwrap();
+            let to_ino = lock.0.get_mut(&to).unwrap();
             assert_eq!(to_ino.tp, FileType::Dir);
             let InodePos(to_lidx, to_innd) = to_ino.ipos[0].clone();
             assert_eq!(to_lidx, RW_LAYER_IDX);
 
-            fs.rename(from_innd, name, to_innd, newname)?;
-        }
+            (to_innd, to_ino)
+        };
+        fs.rename(from_innd, name, to_innd, newname)?;
+
+        // add new cached child
+        to_ino.children.as_mut().unwrap().insert(PathBuf::from(newname), entry);
+
         // create black out file for oldname
         self.ensure_black_out_file(&fs, from_innd, name)?;
 
