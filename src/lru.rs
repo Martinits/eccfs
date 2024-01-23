@@ -39,7 +39,7 @@ impl<K: Hash + Eq + Clone, V> Lru<K, V> {
 
         // push new entry into cache
         if self.0.put(key, (val.clone(), false)).is_some() {
-            Err(FsError::AlreadyExists)
+            Err(new_error!(FsError::AlreadyExists))
         } else {
             Ok(ret)
         }
@@ -51,7 +51,7 @@ impl<K: Hash + Eq + Clone, V> Lru<K, V> {
             |&(_, v)| Arc::<V>::strong_count(&v.0) == 1
         );
         if res.is_none() {
-            return Err(FsError::CacheIsFull);
+            return Err(new_error!(FsError::CacheIsFull));
         }
 
         let k = res.unwrap().0.clone();
@@ -61,7 +61,7 @@ impl<K: Hash + Eq + Clone, V> Lru<K, V> {
                 // return payload for write back
                 Ok(Some((k, payload)))
             } else {
-                Err(FsError::UnknownError)
+                Err(new_error!(FsError::UnknownError))
             }
         } else {
             Ok(None)
@@ -196,9 +196,9 @@ where
         self.tx_to_server.send(ChannelReq::Get {
             key,
             reply: tx,
-        }).map_err(|_| FsError::ChannelSendError)?;
+        }).map_err(|_| new_error!(FsError::ChannelSendError))?;
 
-        rx.recv().map_err(|_| FsError::ChannelRecvError)?
+        rx.recv().map_err(|_| new_error!(FsError::ChannelRecvError))?
     }
 
     pub fn insert_and_get(&mut self, key: K, apayload: &Arc<V>) -> FsResult<Option<(K, V)>> {
@@ -208,9 +208,9 @@ where
             key,
             value: apayload.clone(),
             reply: tx,
-        }).map_err(|_| FsError::ChannelSendError)?;
+        }).map_err(|_| new_error!(FsError::ChannelSendError))?;
 
-        rx.recv().map_err(|_| FsError::ChannelRecvError)?
+        rx.recv().map_err(|_| new_error!(FsError::ChannelRecvError))?
     }
 
     pub fn mark_dirty(&mut self, key: K) -> FsResult<()> {
@@ -219,9 +219,9 @@ where
         self.tx_to_server.send(ChannelReq::MarkDirty {
             key,
             reply: tx,
-        }).map_err(|_| FsError::ChannelSendError)?;
+        }).map_err(|_| new_error!(FsError::ChannelSendError))?;
 
-        rx.recv().map_err(|_| FsError::ChannelRecvError)?
+        rx.recv().map_err(|_| new_error!(FsError::ChannelRecvError))?
     }
 
     pub fn flush_key(&mut self, key: K) -> FsResult<Option<V>> {
@@ -230,9 +230,9 @@ where
         self.tx_to_server.send(ChannelReq::Flush {
             key,
             reply: tx,
-        }).map_err(|_| FsError::ChannelSendError)?;
+        }).map_err(|_| new_error!(FsError::ChannelSendError))?;
 
-        rx.recv().map_err(|_| FsError::ChannelRecvError)?
+        rx.recv().map_err(|_| new_error!(FsError::ChannelRecvError))?
     }
 
     pub fn flush_all(&mut self, wb: bool) -> FsResult<Option<Vec<(K, V)>>> {
@@ -241,9 +241,9 @@ where
         self.tx_to_server.send(ChannelReq::FlushAll {
             wb,
             reply: tx,
-        }).map_err(|_| FsError::ChannelSendError)?;
+        }).map_err(|_| new_error!(FsError::ChannelSendError))?;
 
-        let wb_list = rx.recv().map_err(|_| FsError::ChannelRecvError)??;
+        let wb_list = rx.recv().map_err(|_| new_error!(FsError::ChannelRecvError))??;
         Ok(if wb_list.len() == 0 {
             None
         } else {

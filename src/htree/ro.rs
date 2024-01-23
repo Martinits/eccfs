@@ -37,7 +37,7 @@ impl ROHashTree {
     // pos is by block
     pub fn get_blk(&self, pos: u64) -> FsResult<Arc<Block>> {
         if pos >= self.length {
-            return Err(FsError::UnexpectedEof)
+            return Err(new_error!(FsError::UnexpectedEof))
         }
 
         let mut backend = mutex_lock!(self.backend);

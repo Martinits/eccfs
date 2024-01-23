@@ -64,17 +64,17 @@ impl RWFS {
 
         // check sb file len
         if sb_file.get_len()? != blk2byte!(sb.ibitmap_len + 1) {
-            return Err(FsError::SuperBlockCheckFailed);
+            return Err(new_error!(FsError::SuperBlockCheckFailed));
         }
         // check nr_data_file
         if io_try!(fs::read_dir(path)).count() != sb.nr_data_file {
-            return Err(FsError::SuperBlockCheckFailed);
+            return Err(new_error!(FsError::SuperBlockCheckFailed));
         }
 
         // read ibitmap
         if sb.ibitmap_len == 0 {
             // no possibilty that ibitmap is empty
-            return Err(FsError::SuperBlockCheckFailed);
+            return Err(new_error!(FsError::SuperBlockCheckFailed));
         }
         let mut ibitmap_blks = Vec::with_capacity(sb.ibitmap_len as usize);
         for (i, (blk, ke)) in ibitmap_blks.iter_mut().zip(sb.ibitmap_ke.iter()).enumerate() {
@@ -92,7 +92,7 @@ impl RWFS {
         // read itbl
         if sb.itbl_len == 0 {
             // no possibilty that itbl is empty
-            return Err(FsError::SuperBlockCheckFailed);
+            return Err(new_error!(FsError::SuperBlockCheckFailed));
         }
         let itbl_file_name = hex::encode_upper(&sb.itbl_name);
         assert_eq!(itbl_file_name.len(), 2 * size_of::<Hash256>());
@@ -100,7 +100,7 @@ impl RWFS {
         let mut itbl_storage = FileStorage::new(Path::new(&pb), true)?;
         pb.pop();
         if itbl_storage.get_len()? != blk2byte!(sb.itbl_len) {
-            return Err(FsError::SuperBlockCheckFailed);
+            return Err(new_error!(FsError::SuperBlockCheckFailed));
         }
         let inode_tbl = RWHashTree::new(
             Some(RW_CACHE_CAP_DEFAULT_ITBL),
@@ -381,7 +381,7 @@ impl FileSystem for RWFS {
 
         // hard links not allowed for directories
         if lock.tp == FileType::Dir {
-            return Err(FsError::PermissionDenied);
+            return Err(new_error!(FsError::PermissionDenied));
         }
 
         lock.nlinks += 1;

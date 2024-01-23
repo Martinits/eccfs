@@ -127,7 +127,7 @@ impl ROFS {
         let mut raw = vec![0u8; size_of::<DInodeBase>()];
         let start = pos64_to_byte(bpos, offset) as usize;
         if self.inode_tbl.read_exact(start, &mut raw)? != raw.len() {
-            return Err(FsError::UnexpectedEof);
+            return Err(new_error!(FsError::UnexpectedEof));
         }
         let di_base = unsafe {
             &*(raw.as_ptr() as *const DInodeBase)
@@ -152,7 +152,7 @@ impl ROFS {
                 } else {
                     raw.resize(size_of::<DInodeDirBaseNoInline>(), 0);
                     if self.inode_tbl.read_exact(start, &mut raw)? != raw.len() {
-                        return Err(FsError::UnexpectedEof);
+                        return Err(new_error!(FsError::UnexpectedEof));
                     }
                     let di_dir_base = unsafe {
                         &*(raw.as_ptr() as *const DInodeDirBaseNoInline)
@@ -168,7 +168,7 @@ impl ROFS {
         // read whole inode
         raw.resize(inode_size, 0);
         if self.inode_tbl.read_exact(start, &mut raw)? != raw.len() {
-            return Err(FsError::UnexpectedEof);
+            return Err(new_error!(FsError::UnexpectedEof));
         }
 
         Inode::new_from_raw(
@@ -210,14 +210,14 @@ impl ROFS {
             let read = self.path_tbl.as_ref().unwrap()
                 .read_exact(pos as usize, buf.as_mut_slice())?;
             if read != *len as usize {
-                return Err(FsError::InvalidData)
+                return Err(new_error!(FsError::InvalidData))
             }
-            String::from_utf8(buf).map_err(|_| FsError::InvalidData)?
+            String::from_utf8(buf).map_err(|_| new_error!(FsError::InvalidData))?
         } else {
             std::str::from_utf8(
                 name.split_at(*len as usize).0
             ).map_err(
-                |_| FsError::InvalidData
+                |_| new_error!(FsError::InvalidData)
             )?.into()
         };
         Ok(name.into())
@@ -280,9 +280,9 @@ impl FileSystem for ROFS {
                 let read = self.path_tbl.as_ref().unwrap()
                             .read_exact(pos as usize, buf.as_mut_slice())?;
                 if read != len {
-                    Err(FsError::IncompatibleMetadata)
+                    Err(new_error!(FsError::IncompatibleMetadata))
                 } else {
-                    let s = String::from_utf8(buf).map_err(|_| FsError::InvalidData)?;
+                    let s = String::from_utf8(buf).map_err(|_| new_error!(FsError::InvalidData))?;
                     Ok(s.into())
                 }
             }
@@ -353,7 +353,7 @@ impl FileSystem for ROFS {
                             .read_exact(de_start as usize, to)?;
 
                 if read != num * size_of::<DirEntry>() {
-                    Err(FsError::InvalidData)
+                    Err(new_error!(FsError::InvalidData))
                 } else {
                     let mut ret = Vec::with_capacity(num);
                     for de in de_list.into_iter() {

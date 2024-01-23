@@ -32,7 +32,7 @@ fn libc_mode_split(mode: u32) -> FsResult<(vfs::FileType, u16)> {
         libc::S_IFREG => vfs::FileType::Reg,
         libc::S_IFDIR => vfs::FileType::Dir,
         libc::S_IFLNK => vfs::FileType::Lnk,
-        _ => return Err(FsError::NotSupported),
+        _ => return Err(new_error!(FsError::NotSupported)),
     };
     Ok((tp, (mode & 0x0777) as u16))
 }

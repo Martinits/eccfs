@@ -153,21 +153,21 @@ macro_rules! rw_as_blob {
 #[macro_export]
 macro_rules! mutex_lock {
     ($mu: expr) => {
-        $mu.lock().map_err(|_| FsError::MutexError)?
+        $mu.lock().map_err(|_| new_error!(FsError::MutexError))?
     };
 }
 
 #[macro_export]
 macro_rules! rwlock_read {
     ($mu: expr) => {
-        $mu.read().map_err(|_| FsError::RwLockError)?
+        $mu.read().map_err(|_| new_error!(FsError::RwLockError))?
     };
 }
 
 #[macro_export]
 macro_rules! rwlock_write {
     ($mu: expr) => {
-        $mu.write().map_err(|_| FsError::RwLockError)?
+        $mu.write().map_err(|_| new_error!(FsError::RwLockError))?
     };
 }
 
@@ -194,7 +194,7 @@ pub mod io_wrapper {
 
     pub fn write_file_at(f: &mut File, seek: u64, b: &[u8]) -> FsResult<()> {
         if io_try!(f.write_at(b, seek)) != b.len() {
-            return Err(FsError::UnexpectedEof);
+            return Err(new_error!(FsError::UnexpectedEof));
         }
         Ok(())
     }
@@ -223,7 +223,7 @@ pub mod io_wrapper {
     #[macro_export]
     macro_rules! io_try {
         ($e: expr) => {
-            $e.map_err(|e| FsError::IOError(e))?
+            $e.map_err(|e| new_error!(FsError::IOError(e)))?
         };
     }
 }

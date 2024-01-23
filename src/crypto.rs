@@ -47,7 +47,7 @@ pub fn sha3_256_any(input: &[u8]) -> FsResult<Hash256> {
     hasher.update(input);
 
     let hash = hasher.finalize().try_into().map_err(
-        |_| FsError::UnknownError
+        |_| new_error!(FsError::UnknownError)
     )?;
 
     Ok(hash)
@@ -60,7 +60,7 @@ pub fn sha3_256_blk_check(input: &Block, hash: &Hash256) -> FsResult<()> {
 pub fn sha3_256_any_check(input: &[u8], hash: &Hash256) -> FsResult<()> {
     let actual = sha3_256_any(input)?;
     if actual != *hash {
-        Err(FsError::IntegrityCheckError)
+        Err(new_error!(FsError::IntegrityCheckError))
     } else {
         Ok(())
     }
@@ -88,7 +88,7 @@ pub fn aes_gcm_128_blk_enc(
     let tag = cipher.encrypt_in_place_detached(
         &nonce, b"", input
     ).map_err(
-        |_| FsError::CryptoError
+        |_| new_error!(FsError::CryptoError)
     )?;
 
     Ok(tag.try_into().unwrap())
@@ -110,7 +110,7 @@ pub fn aes_gcm_128_blk_dec(
     cipher.decrypt_in_place_detached(
         &nonce, b"", input, Tag::<Aes128Gcm>::from_slice(mac)
     ).map_err(
-        |_| FsError::IntegrityCheckError
+        |_| new_error!(FsError::IntegrityCheckError)
     )?;
 
     Ok(())
@@ -187,7 +187,7 @@ pub fn half_md4(buf: &[u8]) -> FsResult<u64> {
     hasher.update(buf);
 
     let hash: [u8; 16] = hasher.finalize().try_into().map_err(
-        |_| FsError::UnknownError
+        |_| new_error!(FsError::UnknownError)
     )?;
 
     Ok(u64::from_le_bytes(hash[4..12].try_into().unwrap()))

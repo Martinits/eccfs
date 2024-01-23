@@ -58,7 +58,7 @@ rw_as_blob!(DSuperBlockBase);
 impl SuperBlock {
     pub fn new(raw_blk: Block) -> FsResult<Self> {
         let dsb_base = unsafe {
-            (raw_blk.as_ptr() as *const DSuperBlockBase).as_ref().ok_or(FsError::UnknownError)?
+            &*(raw_blk.as_ptr() as *const DSuperBlockBase)
         };
 
         // check constants
@@ -66,7 +66,7 @@ impl SuperBlock {
             || dsb_base.bsize != BLK_SZ as u64
             || dsb_base.namemax != NAME_MAX
             || dsb_base.ibitmap_start != 1 {
-            return Err(FsError::SuperBlockCheckFailed)
+            return Err(new_error!(FsError::SuperBlockCheckFailed))
         }
 
         let ibitmap_ke = Vec::from(unsafe {
@@ -117,7 +117,7 @@ impl SuperBlock {
         let mut raw_blk = [0u8; BLK_SZ];
 
         let dsb_base = unsafe {
-            (raw_blk.as_ptr() as *mut DSuperBlockBase).as_mut().ok_or(FsError::UnknownError)?
+            &mut *(raw_blk.as_mut_ptr() as *mut DSuperBlockBase)
         };
 
         dsb_base.nr_data_file = self.nr_data_file as u64;
@@ -131,6 +131,7 @@ impl SuperBlock {
         dsb_base.ibitmap_len = self.ibitmap_ke.len() as u64;
         dsb_base.itbl_name = self.itbl_name;
         dsb_base.itbl_len = self.itbl_len as u64;
+        dsb_base.itbl_ke = self.itbl_ke;
 
         let mut writer: &mut [u8] = &mut raw_blk[size_of::<DSuperBlockBase>()..];
         let bytes = self.ibitmap_ke.len() * size_of::<KeyEntry>();

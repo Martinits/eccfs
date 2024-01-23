@@ -295,7 +295,7 @@ impl RWHashTree {
         while done < total {
             let apay = self.get_blk(
                 ( offset / BLK_SZ ) as u64, false
-            )?.ok_or(FsError::IncompatibleMetadata)?;
+            )?.ok_or_else(|| new_error!(FsError::IncompatibleMetadata))?;
             let round = (total - done).min(BLK_SZ - offset % BLK_SZ);
             let start = offset % BLK_SZ;
             to[done..done+round].copy_from_slice(

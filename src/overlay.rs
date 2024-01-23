@@ -71,7 +71,7 @@ impl OverlayFS {
         for (i, layer) in layers.iter().enumerate() {
             let meta = layer.get_meta(ROOT_INODE_ID)?;
             if meta.ftype != FileType::Dir {
-                return Err(FsError::NotADirectory);
+                return Err(new_error!(FsError::NotADirectory));
             }
             ipos.push(InodePos(i, ROOT_INODE_ID));
         }
@@ -130,7 +130,7 @@ impl OverlayFS {
                 ino.full_path[idx].1,
             ) {
                 Ok(new_iid) => father = new_iid,
-                Err(FsError::AlreadyExists) => {},
+                // Err(FsError::AlreadyExists) => {},
                 Err(e) => return Err(e),
             }
             idx += 1;
@@ -434,10 +434,10 @@ impl FileSystem for OverlayFS {
         perm: FilePerm,
     ) -> FsResult<InodeID> {
         if is_black_out_file(name) {
-            return Err(FsError::PermissionDenied);
+            return Err(new_error!(FsError::PermissionDenied));
         }
         if self.lookup(parent, name)?.is_some() {
-            return Err(FsError::AlreadyExists);
+            return Err(new_error!(FsError::AlreadyExists));
         }
 
         self.ensure_children_cached(parent)?;
@@ -478,10 +478,10 @@ impl FileSystem for OverlayFS {
 
     fn link(&self, parent: InodeID, name: &OsStr, linkto: InodeID) -> FsResult<()> {
         if is_black_out_file(name) {
-            return Err(FsError::PermissionDenied);
+            return Err(new_error!(FsError::PermissionDenied));
         }
         if self.lookup(parent, name)?.is_some() {
-            return Err(FsError::AlreadyExists);
+            return Err(new_error!(FsError::AlreadyExists));
         }
 
         self.ensure_copy_up(parent)?;
@@ -492,7 +492,7 @@ impl FileSystem for OverlayFS {
         let to = lock.0.get(&linkto).unwrap();
         let tp = to.tp;
         if tp == FileType::Dir {
-            return Err(FsError::IsADirectory);
+            return Err(new_error!(FsError::IsADirectory));
         }
         let InodePos(to_lidx, to_innd) = to.ipos[0].clone();
         assert_eq!(to_lidx, RW_LAYER_IDX);
@@ -510,14 +510,14 @@ impl FileSystem for OverlayFS {
 
     fn unlink(&self, parent: InodeID, name: &OsStr) -> FsResult<()> {
         if is_black_out_file(name) {
-            return Err(FsError::PermissionDenied);
+            return Err(new_error!(FsError::PermissionDenied));
         }
 
         self.ensure_copy_up(parent)?;
         self.ensure_children_cached(parent)?;
 
-        let child_iid = self.lookup(parent, name)?.ok_or(
-            FsError::NotFound
+        let child_iid = self.lookup(parent, name)?.ok_or_else(
+            || new_error!(FsError::NotFound)
         )?;
 
         let mut lock = rwlock_write!(self.icac);
@@ -526,9 +526,9 @@ impl FileSystem for OverlayFS {
         assert_eq!(lidx, RW_LAYER_IDX);
 
         let fs = rwlock_read!(self.layers[lidx]);
-        match fs.unlink(parent, name) {
-            Ok(_) | Err(FsError::NotFound) => {
-                // if black out file not exists, create one
+        match fs.unlink(innd, name) {
+            // Ok(_) | Err(FsError::NotFound) => {
+            Ok(_) => {
                 self.ensure_black_out_file(&fs, innd, name, child_iid)?;
             }
             Err(e) => return Err(e),
@@ -548,10 +548,10 @@ impl FileSystem for OverlayFS {
         gid: u32,
     ) -> FsResult<InodeID> {
         if is_black_out_file(name) {
-            return Err(FsError::PermissionDenied);
+            return Err(new_error!(FsError::PermissionDenied));
         }
         if self.lookup(parent, name)?.is_some() {
-            return Err(FsError::AlreadyExists);
+            return Err(new_error!(FsError::AlreadyExists));
         }
 
         self.ensure_copy_up(parent)?;
@@ -595,13 +595,13 @@ impl FileSystem for OverlayFS {
         to: InodeID, newname: &OsStr
     ) -> FsResult<()> {
         if is_black_out_file(name) {
-            return Err(FsError::PermissionDenied);
+            return Err(new_error!(FsError::PermissionDenied));
         }
         if is_black_out_file(newname) {
-            return Err(FsError::PermissionDenied);
+            return Err(new_error!(FsError::PermissionDenied));
         }
         if self.lookup(to, newname)?.is_some() {
-            return Err(FsError::AlreadyExists);
+            return Err(new_error!(FsError::AlreadyExists));
         }
 
         let mut lock = rwlock_write!(self.icac);
@@ -610,11 +610,11 @@ impl FileSystem for OverlayFS {
             let old_ino = lock.0.get(&old_iid).unwrap();
             // refuse to move a dir with children in RO layers
             if self.dir_has_ro_layer(old_ino) {
-                return Err(FsError::PermissionDenied);
+                return Err(new_error!(FsError::PermissionDenied));
             }
             old_iid
         } else {
-            return Err(FsError::NotFound);
+            return Err(new_error!(FsError::NotFound));
         };
 
         self.ensure_copy_up(from)?;

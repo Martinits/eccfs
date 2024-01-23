@@ -379,7 +379,7 @@ impl Inode {
 
     pub fn read_data(&mut self, offset: usize, to: &mut [u8]) -> FsResult<usize> {
         if offset >= self.size {
-            Err(FsError::InvalidParameter)
+            Err(new_error!(FsError::InvalidParameter))
         } else {
             let readable = (self.size - offset).min(to.len());
             match &mut self.ext {
@@ -392,7 +392,7 @@ impl Inode {
                     to[..readable].copy_from_slice(&data[offset..offset+readable]);
                     Ok(readable)
                 }
-                _ => Err(FsError::PermissionDenied),
+                _ => Err(new_error!(FsError::PermissionDenied)),
             }
         }
     }
@@ -412,7 +412,7 @@ impl Inode {
                 data[offset..write_end].copy_from_slice(from);
                 Ok(from.len())
             }
-            _ => Err(FsError::PermissionDenied),
+            _ => Err(new_error!(FsError::PermissionDenied)),
         }
     }
 
@@ -442,7 +442,7 @@ impl Inode {
 
                 (data_file_name, htree)
             }
-            _ => return Err(FsError::UnknownError),
+            _ => return Err(new_error!(FsError::UnknownError)),
         };
 
         self.ext = InodeExt::Reg {
@@ -464,7 +464,7 @@ impl Inode {
 
                 (d, data_file_name.clone())
             }
-            _ => return Err(FsError::UnknownError),
+            _ => return Err(new_error!(FsError::UnknownError)),
         };
 
         self.remove_fs_file(&file_to_remove)?;
@@ -484,7 +484,7 @@ impl Inode {
             InodeExt::Reg { data, .. } => {
                 data.resize(new_sz.div_ceil(BLK_SZ) as u64)?;
             }
-            _ => return Err(FsError::PermissionDenied),
+            _ => return Err(new_error!(FsError::PermissionDenied)),
         }
         self.size = new_sz as usize;
         Ok(())
@@ -520,7 +520,7 @@ impl Inode {
             SetMetadata::Atime(t) => self.atime = t,
             SetMetadata::Ctime(t) => self.ctime = t,
             SetMetadata::Mtime(t) => self.mtime = t,
-            SetMetadata::Type(_) => return Err(FsError::PermissionDenied),
+            SetMetadata::Type(_) => return Err(new_error!(FsError::PermissionDenied)),
             SetMetadata::Permission(perm) => {
                 self.perm = FilePerm::from_bits(perm).unwrap();
             }
@@ -534,7 +534,7 @@ impl Inode {
         match &self.ext {
             InodeExt::LnkInline(lnk) => Ok(lnk.clone()),
             InodeExt::Lnk { lnk_name, .. } => Ok(lnk_name.clone()),
-            _ => Err(FsError::PermissionDenied),
+            _ => Err(new_error!(FsError::PermissionDenied)),
         }
     }
 
@@ -542,7 +542,7 @@ impl Inode {
         match &mut self.ext {
             InodeExt::LnkInline(lnk) => *lnk = target.into(),
             InodeExt::Lnk { lnk_name, .. } => *lnk_name = target.into(),
-            _ => return Err(FsError::PermissionDenied),
+            _ => return Err(new_error!(FsError::PermissionDenied)),
         }
         Ok(())
     }
@@ -573,7 +573,7 @@ impl Inode {
                     |de| de.into()
                 ).collect())
             }
-            _ => Err(FsError::PermissionDenied),
+            _ => Err(new_error!(FsError::PermissionDenied)),
         }
     }
 
@@ -609,7 +609,7 @@ impl Inode {
 
     pub fn add_child(&mut self, name: &OsStr, tp: FileType, iid: InodeID) -> FsResult<()> {
         if self.find_child(name)?.is_some() {
-            return Err(FsError::AlreadyExists);
+            return Err(new_error!(FsError::AlreadyExists));
         }
 
         match &mut self.ext {
@@ -624,13 +624,13 @@ impl Inode {
                 self.size += DIRENT_SZ;
                 Ok(())
             }
-            _ => Err(FsError::PermissionDenied),
+            _ => Err(new_error!(FsError::PermissionDenied)),
         }
     }
 
     pub fn rename_child(&mut self, name: &OsStr, newname: &OsStr) -> FsResult<()> {
         if self.find_child(newname)?.is_some() {
-            return Err(FsError::AlreadyExists);
+            return Err(new_error!(FsError::AlreadyExists));
         }
 
         if let Some((pos, mut de)) = self.find_child_pos(name)? {
@@ -642,10 +642,10 @@ impl Inode {
                     assert_eq!(written, DIRENT_SZ);
                     Ok(())
                 }
-                _ => Err(FsError::PermissionDenied),
+                _ => Err(new_error!(FsError::PermissionDenied)),
             }
         } else {
-            Err(FsError::NotFound)
+            Err(new_error!(FsError::NotFound))
         }
     }
 
@@ -665,10 +665,10 @@ impl Inode {
                 self.size -= DIRENT_SZ;
                 Ok((de.ipos, de.tp))
             } else {
-                Err(FsError::PermissionDenied)
+                Err(new_error!(FsError::PermissionDenied))
             }
         } else {
-            Err(FsError::NotFound)
+            Err(new_error!(FsError::NotFound))
         }
     }
 
@@ -684,7 +684,7 @@ impl Inode {
                 InodeExt::RegInline(d) => {
                     d.resize(end, 0);
                 }
-                _ => return Err(FsError::PermissionDenied),
+                _ => return Err(new_error!(FsError::PermissionDenied)),
             }
         } else {
             // zero range
@@ -695,7 +695,7 @@ impl Inode {
                 InodeExt::RegInline(d) => {
                     d[offset..end].fill(0);
                 }
-                _ => return Err(FsError::PermissionDenied),
+                _ => return Err(new_error!(FsError::PermissionDenied)),
             }
         }
         self.size = self.size.min(end);

@@ -104,3 +104,14 @@ impl Into<c_int> for FsError {
         }
     }
 }
+
+#[macro_export]
+macro_rules! new_error{
+    ($e: expr) => {
+        if cfg!(debug_assertions) {
+            panic!("Error: {:?}", $e);
+        } else {
+            $e
+        }
+    }
+}

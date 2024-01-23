@@ -50,7 +50,7 @@ impl BitMap {
             self.possible_free_pos = self.possible_free_pos.min(pos);
             Ok(())
         } else {
-            Err(FsError::NotFound)
+            Err(new_error!(FsError::NotFound))
         }
     }
 

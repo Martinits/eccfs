@@ -35,13 +35,13 @@ pub fn build_from_dir(
 ) -> FsResult<FSMode> {
     // check to
     if fs::metadata(to).is_ok() {
-        return Err(FsError::AlreadyExists);
+        return Err(new_error!(FsError::AlreadyExists));
     }
     let image = io_try!(OpenOptions::new().write(true).create(true).open(to));
 
     // check from
     if !io_try!(fs::metadata(from)).is_dir() {
-        return Err(FsError::NotADirectory);
+        return Err(new_error!(FsError::NotADirectory));
     }
 
     // prepare
@@ -638,7 +638,7 @@ impl ROBuilder {
             let mut f = io_try!(File::open(path));
             let mut buf = vec![0u8; inode_ext_sz];
             if io_try!(f.read(&mut buf)) != dinode_base.size as usize {
-                return Err(FsError::UnexpectedEof);
+                return Err(new_error!(FsError::UnexpectedEof));
             }
 
             dinode_bytes.extend(&buf);
@@ -700,7 +700,7 @@ impl ROBuilder {
         // jumpover superblock in image file
         io_try!(self.image.set_len(BLK_SZ as u64));
         if io_try!(self.image.seek(SeekFrom::End(0))) != BLK_SZ as u64 {
-            return Err(FsError::UnexpectedEof);
+            return Err(new_error!(FsError::UnexpectedEof));
         }
 
         // filter all meta files through hash tree, append to image file

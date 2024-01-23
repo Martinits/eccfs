@@ -73,7 +73,9 @@ impl ROCache {
     pub fn get_blk_hint(
         &mut self, pos: u64, cachable: bool, hint: CryptoHint
     ) -> FsResult<Arc<Block>> {
-        self.get_blk_impl(pos, cachable, Some(hint))?.ok_or(FsError::NotFound)
+        self.get_blk_impl(pos, cachable, Some(hint))?.ok_or_else(
+            || new_error!(FsError::NotFound)
+        )
     }
 
     fn get_blk_impl(
@@ -85,19 +87,19 @@ impl ROCache {
             cachable,
             reply: tx,
             miss_hint: hint,
-        }).map_err(|_| FsError::ChannelSendError)?;
+        }).map_err(|_| new_error!(FsError::ChannelSendError))?;
 
-        let ablk = rx.recv().map_err(|_| FsError::ChannelRecvError)??;
+        let ablk = rx.recv().map_err(|_| new_error!(FsError::ChannelRecvError))??;
 
         Ok(ablk)
     }
 
     pub fn flush(&mut self) -> FsResult<()> {
-        self.tx_to_server.send(ROCacheReq::Flush).map_err(|_| FsError::ChannelSendError)
+        self.tx_to_server.send(ROCacheReq::Flush).map_err(|_| new_error!(FsError::ChannelSendError))
     }
 
     pub fn abort(&mut self) -> FsResult<()> {
-        self.tx_to_server.send(ROCacheReq::Abort).map_err(|_| FsError::ChannelSendError)
+        self.tx_to_server.send(ROCacheReq::Abort).map_err(|_| new_error!(FsError::ChannelSendError))
     }
 }
 
@@ -143,7 +145,7 @@ impl ROCacheServer {
                     // This means block is not cachable and no hint is provided.
                     // Ideally, caller should always provide hint for a uncachable block,
                     // and we should return an error like this:
-                    // Err(FsError::CacheNeedHint)
+                    // Err(new_error!(FsError::CacheNeedHint))
 
                     // But maybe caller just want to know whether such a block is cached,
                     // so we handle this gently.

@@ -101,13 +101,13 @@ impl Into<SuperBlock> for DSuperBlock {
 impl SuperBlock {
     pub fn new(raw_blk: Block) -> FsResult<Self> {
         let dsb = unsafe {
-            (raw_blk.as_ptr() as *const DSuperBlock).as_ref().ok_or(FsError::UnknownError)?
+            &*(raw_blk.as_ptr() as *const DSuperBlock)
         };
 
         // check constants
         if dsb.magic != super::ROFS_MAGIC
             || dsb.bsize != BLK_SZ as u64 || dsb.namemax != NAME_MAX {
-            Err(FsError::SuperBlockCheckFailed)
+            Err(new_error!(FsError::SuperBlockCheckFailed))
         } else {
             Ok(dsb.clone().into())
         }

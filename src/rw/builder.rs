@@ -22,10 +22,10 @@ const ITBL_IID: InodeID = InodeID::MAX;
 pub fn create_empty(dir: &Path, encrypted: Option<Key128>) -> FsResult<FSMode> {
     // check to
     if !io_try!(fs::metadata(dir)).is_dir() {
-        return Err(FsError::NotADirectory);
+        return Err(new_error!(FsError::NotADirectory));
     }
     if io_try!(fs::read_dir(dir)).next().is_some() {
-        return Err(FsError::DirectoryNotEmpty);
+        return Err(new_error!(FsError::DirectoryNotEmpty));
     }
 
     let mut builder = RWBuilder::new(
@@ -46,15 +46,15 @@ pub fn build_from_dir(
 ) -> FsResult<FSMode> {
     // check to
     if !io_try!(fs::metadata(to)).is_dir() {
-        return Err(FsError::NotADirectory);
+        return Err(new_error!(FsError::NotADirectory));
     }
     if io_try!(fs::read_dir(to)).next().is_some() {
-        return Err(FsError::DirectoryNotEmpty);
+        return Err(new_error!(FsError::DirectoryNotEmpty));
     }
 
     // check from
     if !io_try!(fs::metadata(from)).is_dir() {
-        return Err(FsError::NotADirectory);
+        return Err(new_error!(FsError::NotADirectory));
     }
 
     let mut builder = RWBuilder::new(
@@ -374,7 +374,7 @@ impl RWBuilder {
             // read all bytes from source file
             let mut f = io_try!(File::open(path));
             if io_try!(f.read(&mut inode.data[..sz as usize])) != sz as usize {
-                return Err(FsError::UnexpectedEof);
+                return Err(new_error!(FsError::UnexpectedEof));
             }
 
             inode.into()

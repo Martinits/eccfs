@@ -212,7 +212,7 @@ impl Inode {
                                 std::str::from_utf8(
                                     dinode.name.split_at(ibase.size as usize).0
                                 ).map_err(
-                                    |_| FsError::InvalidData
+                                    |_| new_error!(FsError::InvalidData)
                                 )?.into()
                             )
                         }
@@ -224,7 +224,7 @@ impl Inode {
 
     pub fn read_data(&self, offset: usize, to: &mut [u8]) -> FsResult<usize> {
         if offset >= self.size {
-            Err(FsError::InvalidParameter)
+            Err(new_error!(FsError::InvalidParameter))
         } else {
             let readable = (self.size - offset).min(to.len());
             match &self.ext {
@@ -237,7 +237,7 @@ impl Inode {
                     to[..readable].copy_from_slice(&data[offset..offset+readable]);
                     Ok(readable)
                 }
-                _ => Err(FsError::PermissionDenied),
+                _ => Err(new_error!(FsError::PermissionDenied)),
             }
         }
     }
@@ -270,7 +270,7 @@ impl Inode {
         if let InodeExt::Lnk(ref lnk) = self.ext {
             Ok(lnk.clone())
         } else {
-            Err(FsError::PermissionDenied)
+            Err(new_error!(FsError::PermissionDenied))
         }
     }
 
@@ -304,7 +304,7 @@ impl Inode {
                     DirEntryInfo::Inline(&de_list[offset..to])
                 }
             },
-            _ => return Err(FsError::PermissionDenied),
+            _ => return Err(new_error!(FsError::PermissionDenied)),
         };
 
         Ok(Some(ret))
@@ -338,7 +338,7 @@ impl Inode {
                 }
             },
             InodeExt::DirInline { de_list } => Ok(LookUpInfo::Inline(de_list)),
-            _ => Err(FsError::PermissionDenied),
+            _ => Err(new_error!(FsError::PermissionDenied)),
         }
     }
 }

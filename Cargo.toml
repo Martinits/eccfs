@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 aes = "0.8.3"
 aes-gcm = "0.10.3"
-anyhow = "1.0.79"
 bitflags = "2.4.1"
 cmac = "0.7.2"
 crypto = "0.5.1"
@@ -21,9 +20,6 @@ rand = "0.8.5"
 rand_core = "0.6.4"
 sha3 = "0.10.8"
 thiserror = "1.0.56"
-
-[dev-dependencies]
-anyhow = { version = "1.0.79", features = ["backtrace"] }
 
 [[bin]]
 name = "eccfs-fuse-cli"
