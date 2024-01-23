@@ -199,7 +199,7 @@ impl Inode {
                     assert_eq!(back.get_len()?, blk2byte!(di.len));
                     assert_eq!(
                         mht::get_phy_nr_blk(di.base.size.div_ceil(BLK_SZ as u64)),
-                        blk2byte!(di.len)
+                        di.len
                     );
                     InodeExt::Reg {
                         data_file_name: fname.into(),
@@ -228,7 +228,7 @@ impl Inode {
                 assert_eq!(back.get_len()?, blk2byte!(di.len));
                 assert_eq!(
                     mht::get_phy_nr_blk(di.base.size.div_ceil(BLK_SZ as u64)),
-                    blk2byte!(di.len)
+                    di.len
                 );
                 InodeExt::Dir {
                     data_file_name: fname.into(),
@@ -498,10 +498,11 @@ impl Inode {
                 FileType::Dir => self.size,
                 FileType::Lnk => 0,
             } as u64,
-            blocks: if self.tp == FileType::Reg {
-                self.size.div_ceil(BLK_SZ) as u64
-            } else {
-                0
+            blocks: match self.tp {
+                FileType::Reg | FileType::Dir => {
+                    self.size.div_ceil(BLK_SZ) as u64
+                }
+                _ => 0,
             },
             atime: self.atime,
             ctime: self.ctime,
@@ -555,20 +556,28 @@ impl Inode {
                 let num = if num == 0 {
                     self.size / DIRENT_SZ - offset
                 } else {
+                    debug!("request num {}", num);
+                    debug!("dir size {}", self.size);
+                    debug!("offset {}", offset);
+                    assert!(self.size / DIRENT_SZ >= offset);
                     num.min(self.size / DIRENT_SZ - offset)
                 };
-                let de_list: Vec<DiskDirEntry> = Vec::with_capacity(num);
+                let mut de_list: Vec<DiskDirEntry> = Vec::with_capacity(num);
+                unsafe {
+                    de_list.set_len(num);
+                }
                 let len = num * DIRENT_SZ;
                 let read = data.read_exact(
                     offset * DIRENT_SZ,
                     unsafe {
                         std::slice::from_raw_parts_mut(
-                            de_list.as_ptr() as *mut u8,
+                            de_list.as_mut_ptr() as *mut u8,
                             len,
                         )
                     }
                 )?;
                 assert_eq!(len, read);
+                debug!("return de {}", de_list.len());
                 Ok(de_list.into_iter().map(
                     |de| de.into()
                 ).collect())
@@ -579,9 +588,10 @@ impl Inode {
 
     pub fn find_child(&mut self, name: &OsStr) -> FsResult<Option<InodeID>> {
         let mut done = 0;
-        while done < self.size {
+        let nr_de = self.size / DIRENT_SZ;
+        while done < nr_de {
             // try read a block of de
-            let round = DIRENT_PER_BLK.min(self.size - done);
+            let round = DIRENT_PER_BLK.min(nr_de - done);
             for de in self.read_child(done, round)? {
                 if de.name.as_str() == name {
                     return Ok(Some(de.ipos));
@@ -594,9 +604,10 @@ impl Inode {
 
     fn find_child_pos(&mut self, name: &OsStr) -> FsResult<Option<(usize, DirEntry)>> {
         let mut done = 0;
-        while done < self.size {
+        let nr_de = self.size / DIRENT_SZ;
+        while done < nr_de {
             // try read a block of de
-            let round = DIRENT_PER_BLK.min(self.size - done);
+            let round = DIRENT_PER_BLK.min(nr_de - done);
             for (i, de) in self.read_child(done, round)?.into_iter().enumerate() {
                 if de.name.as_str() == name {
                     return Ok(Some((done + i, de)));
