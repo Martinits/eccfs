@@ -54,6 +54,7 @@ impl RWFS {
         pb.push(SB_FILE_NAME);
 
         let mut sb_file = FileStorage::new(&pb, true)?;
+        pb.pop();
 
         // read superblock
         let mut sb_blk = sb_file.read_blk(SUPERBLOCK_POS)?;
@@ -95,7 +96,9 @@ impl RWFS {
         }
         let itbl_file_name = hex::encode_upper(&sb.itbl_name);
         assert_eq!(itbl_file_name.len(), 2 * size_of::<Hash256>());
-        let mut itbl_storage = FileStorage::new(Path::new(&itbl_file_name), true)?;
+        pb.push(itbl_file_name);
+        let mut itbl_storage = FileStorage::new(Path::new(&pb), true)?;
+        pb.pop();
         if itbl_storage.get_len()? != blk2byte!(sb.itbl_len) {
             return Err(FsError::SuperBlockCheckFailed);
         }

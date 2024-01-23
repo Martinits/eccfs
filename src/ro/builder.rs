@@ -929,7 +929,7 @@ impl HTreeBuilder {
 #[cfg(test)]
 mod test {
     #[test]
-    fn build() {
+    fn build_ro() {
         use std::path::Path;
         use crate::*;
         use std::fs::OpenOptions;

@@ -61,6 +61,8 @@ impl std::fmt::Display for FsError {
     }
 }
 
+impl std::error::Error for FsError {}
+
 pub type FsResult<T> = Result<T, FsError>;
 
 // used for transition from std::io::ErrorKind to FsError

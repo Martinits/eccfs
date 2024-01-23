@@ -35,7 +35,6 @@ fn libc_mode_split(mode: u32) -> FsResult<(vfs::FileType, u16)> {
         _ => return Err(FsError::Unsupported),
     };
     Ok((tp, (mode & 0x0777) as u16))
-
 }
 
 impl Filesystem for EccFs {
@@ -370,6 +369,61 @@ impl Filesystem for EccFs {
     }
 }
 
+fn mount_ro(mode: FSMode, target: String) -> FsResult<()> {
+    debug!("Mounting {}", target);
+
+    let path = format!("test/{}.roimage", target);
+    let mount = Path::new("test/mnt");
+    let rofs = ro::ROFS::new(
+        Path::new(&path),
+        mode.clone(),
+        128,
+        64,
+        0,
+    )?;
+
+    fuser::mount2(
+        EccFs {
+            fs: Box::new(rofs),
+        },
+        mount,
+        &vec![
+            MountOption::AllowOther,
+            MountOption::AutoUnmount,
+            MountOption::RO,
+        ]
+    ).unwrap();
+
+    Ok(())
+}
+
+fn mount_rw(mode: FSMode, target: String) -> FsResult<()> {
+    debug!("Mounting {}", target);
+
+    let path = format!("test/{}.rwimage", target);
+    let mount = Path::new("test/mnt");
+    let rwfs = rw::RWFS::new(
+        false,
+        Path::new(&path),
+        mode,
+        Some(128),
+        0,
+    )?;
+
+    fuser::mount2(
+        EccFs {
+            fs: Box::new(rwfs),
+        },
+        mount,
+        &vec![
+            MountOption::AllowOther,
+            MountOption::AutoUnmount,
+        ]
+    ).unwrap();
+
+    Ok(())
+}
+
 fn main() -> FsResult<()> {
     env_logger::builder()
         .filter_level(log::LevelFilter::Debug)
@@ -400,29 +454,8 @@ fn main() -> FsResult<()> {
     let args: Vec<String> = std::env::args().collect();
     assert!(args.len() >= 2);
     let target = args[1].clone();
-    debug!("Mounting {}", target);
 
-    let path = format!("test/{}.roimage", target);
-    let mount = Path::new("test/mnt");
-    let rofs = ro::ROFS::new(
-        Path::new(&path),
-        mode.clone(),
-        128,
-        64,
-        0,
-    )?;
-
-    fuser::mount2(
-        EccFs {
-            fs: Box::new(rofs),
-        },
-        mount,
-        &vec![
-            MountOption::AllowOther,
-            MountOption::AutoUnmount,
-            MountOption::RO,
-        ]
-    ).unwrap();
+    mount_rw(mode.clone(), target)?;
 
     Ok(())
 }

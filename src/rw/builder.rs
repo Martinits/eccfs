@@ -532,7 +532,7 @@ impl RWBuilder {
 #[cfg(test)]
 mod test {
     #[test]
-    fn build() {
+    fn build_rw() {
         use std::path::Path;
         use crate::*;
         use std::fs::OpenOptions;
@@ -551,11 +551,11 @@ mod test {
         debug!("Building {}", target);
 
         let from = format!("test/{}", &target);
-        let to = format!("test/{}.roimage", &target);
+        let to = format!("test/{}.rwimage", &target);
 
-        let mut k = Some([0u8; 16]);
-        rand::thread_rng().fill_bytes(k.as_mut().unwrap());
-        // let k = None;
+        // let mut k = Some([0u8; 16]);
+        // rand::thread_rng().fill_bytes(k.as_mut().unwrap());
+        let k = None;
 
         let mode = super::build_from_dir(
             Path::new(&from),
