@@ -223,7 +223,7 @@ pub mod io_wrapper {
     #[macro_export]
     macro_rules! io_try {
         ($e: expr) => {
-            $e.map_err(|e| Into::<FsError>::into(e))?
+            $e.map_err(|e| FsError::IOError(e))?
         };
     }
 }

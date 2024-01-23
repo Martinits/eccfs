@@ -700,7 +700,7 @@ impl ROBuilder {
         // jumpover superblock in image file
         io_try!(self.image.set_len(BLK_SZ as u64));
         if io_try!(self.image.seek(SeekFrom::End(0))) != BLK_SZ as u64 {
-            return Err(FsError::NotSeekable);
+            return Err(FsError::UnexpectedEof);
         }
 
         // filter all meta files through hash tree, append to image file

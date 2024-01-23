@@ -224,7 +224,7 @@ impl Inode {
 
     pub fn read_data(&self, offset: usize, to: &mut [u8]) -> FsResult<usize> {
         if offset >= self.size {
-            Err(FsError::InvalidInput)
+            Err(FsError::InvalidParameter)
         } else {
             let readable = (self.size - offset).min(to.len());
             match &self.ext {

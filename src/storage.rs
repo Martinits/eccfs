@@ -48,7 +48,7 @@ impl ROStorage for FileStorage {
         assert!(blk2byte!(pos) < cur_len);
         let position = io_try!(self.handle.seek(SeekFrom::Start(blk2byte!(pos))));
         if position != blk2byte!(pos) {
-            Err(FsError::NotSeekable)
+            Err(FsError::UnexpectedEof)
         } else {
             io_try!(self.handle.read_exact(to));
             Ok(())
@@ -67,7 +67,7 @@ impl RWStorage for FileStorage {
 
         let position = io_try!(self.handle.seek(SeekFrom::Start(blk2byte!(pos))));
         if position != blk2byte!(pos) {
-            Err(FsError::NotSeekable)
+            Err(FsError::UnexpectedEof)
         } else {
             Ok(io_try!(self.handle.write_all(from)))
         }

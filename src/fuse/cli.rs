@@ -32,7 +32,7 @@ fn libc_mode_split(mode: u32) -> FsResult<(vfs::FileType, u16)> {
         libc::S_IFREG => vfs::FileType::Reg,
         libc::S_IFDIR => vfs::FileType::Dir,
         libc::S_IFLNK => vfs::FileType::Lnk,
-        _ => return Err(FsError::Unsupported),
+        _ => return Err(FsError::NotSupported),
     };
     Ok((tp, (mode & 0x0777) as u16))
 }
@@ -40,7 +40,7 @@ fn libc_mode_split(mode: u32) -> FsResult<(vfs::FileType, u16)> {
 impl Filesystem for EccFs {
     fn init(&mut self, _req: &Request<'_>, _config: &mut KernelConfig) -> Result<(), c_int> {
         self.fs.init().map_err(
-            |e| e as c_int
+            |e| e.into()
         )
     }
 
