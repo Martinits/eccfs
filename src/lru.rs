@@ -155,6 +155,7 @@ where
         wb: bool,
         reply: Sender<FsResult<Vec<(K, V)>>>, // possible write back
     },
+    Abort,
 }
 
 #[derive(Clone)]
@@ -179,6 +180,7 @@ where
         let _handle = thread::spawn(move || {
             loop {
                 match server.rx.recv() {
+                    Ok(ChannelReq::Abort) => break,
                     Ok(req) => server.process(req),
                     Err(e) => panic!("Cache server received an error: {:?}", e),
                 }
@@ -250,6 +252,13 @@ where
             Some(wb_list)
         })
     }
+
+    pub fn abort(&mut self) -> FsResult<()> {
+        self.tx_to_server.send(ChannelReq::Abort).map_err(
+            |_| new_error!(FsError::ChannelSendError)
+        )?;
+        Ok(())
+    }
 }
 
 struct ChannelServer<K, V>
@@ -292,6 +301,7 @@ where
                     reply.send(self.lru.flush_no_wb().map(|_| Vec::new())).unwrap();
                 }
             }
+            _ => panic!("Abort request should be handled before this funciton"),
         }
     }
 }

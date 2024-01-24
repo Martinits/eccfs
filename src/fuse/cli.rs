@@ -6,11 +6,14 @@ use std::path::Path;
 use eccfs::*;
 use eccfs::vfs::*;
 use std::time::Duration;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::prelude::*;
+use std::sync::{Arc, Mutex};
+use std::fs;
 
 struct EccFs {
     fs: Box<dyn vfs::FileSystem>,
+    mode: Arc<Mutex<FSMode>>,
 }
 
 const DEFAULT_TTL: Duration = Duration::new(1, 0);
@@ -32,7 +35,7 @@ fn libc_mode_split(mode: u32) -> FsResult<(vfs::FileType, u16)> {
         libc::S_IFREG => vfs::FileType::Reg,
         libc::S_IFDIR => vfs::FileType::Dir,
         libc::S_IFLNK => vfs::FileType::Lnk,
-        _ => return Err(new_error!(FsError::NotSupported)),
+        _ => return Err(FsError::NotSupported),
     };
     Ok((tp, (mode & 0x0777) as u16))
 }
@@ -45,7 +48,8 @@ impl Filesystem for EccFs {
     }
 
     fn destroy(&mut self) {
-        self.fs.destroy().unwrap();
+        let new_mode = self.fs.destroy().unwrap();
+        *self.mode.lock().unwrap() = new_mode;
     }
 
     fn lookup(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
@@ -53,7 +57,7 @@ impl Filesystem for EccFs {
             let meta = fuse_try!(self.fs.get_meta(iid), reply);
             reply.entry(&DEFAULT_TTL, &meta.into(), 0);
         } else {
-            debug!("lookup not found");
+            // debug!("lookup not found");
             reply.error(FsError::NotFound.into());
         }
     }
@@ -282,7 +286,7 @@ impl Filesystem for EccFs {
                     ft.into(),
                     OsString::from(name),
                 ) {
-                    debug!("Buffer full");
+                    // debug!("Buffer full");
                     break;
                 }
             } else {
@@ -310,10 +314,10 @@ impl Filesystem for EccFs {
     fn access(&mut self, req: &Request<'_>, ino: u64, mask: i32, reply: ReplyEmpty) {
         let meta = fuse_try!(self.fs.get_meta(ino), reply);
         if check_access(meta.uid, meta.gid, meta.perm.bits(), req.uid(), req.gid(), mask) {
-            debug!("Access Ok");
+            // debug!("Access Ok");
             reply.ok();
         } else {
-            debug!("Access Denied");
+            // debug!("Access Denied");
             reply.error(libc::EACCES);
         }
     }
@@ -369,8 +373,8 @@ impl Filesystem for EccFs {
     }
 }
 
-fn mount_ro(mode: FSMode, target: String) -> FsResult<()> {
-    debug!("Mounting {}", target);
+fn mount_ro(mode: FSMode, target: String) -> FsResult<FSMode> {
+    debug!("Mounting rofs {}", target);
 
     let path = format!("test/{}.roimage", target);
     let mount = Path::new("test/mnt");
@@ -382,9 +386,12 @@ fn mount_ro(mode: FSMode, target: String) -> FsResult<()> {
         0,
     )?;
 
+    let amode = Arc::new(Mutex::new(mode));
+
     fuser::mount2(
         EccFs {
             fs: Box::new(rofs),
+            mode: amode.clone(),
         },
         mount,
         &vec![
@@ -394,25 +401,28 @@ fn mount_ro(mode: FSMode, target: String) -> FsResult<()> {
         ]
     ).unwrap();
 
-    Ok(())
+    Ok(Arc::into_inner(amode).unwrap().into_inner().unwrap())
 }
 
-fn mount_rw(mode: FSMode, target: String) -> FsResult<()> {
-    debug!("Mounting {}", target);
+fn mount_rw(mode: FSMode, target: String) -> FsResult<FSMode> {
+    debug!("Mounting rwfs {}", target);
 
     let path = format!("test/{}.rwimage", target);
     let mount = Path::new("test/mnt");
     let rwfs = rw::RWFS::new(
         false,
         Path::new(&path),
-        mode,
+        mode.clone(),
         Some(128),
         0,
     )?;
 
+    let amode = Arc::new(Mutex::new(mode));
+
     fuser::mount2(
         EccFs {
             fs: Box::new(rwfs),
+            mode: amode.clone(),
         },
         mount,
         &vec![
@@ -421,15 +431,10 @@ fn mount_rw(mode: FSMode, target: String) -> FsResult<()> {
         ]
     ).unwrap();
 
-    Ok(())
+    Ok(Arc::into_inner(amode).unwrap().into_inner().unwrap())
 }
 
-fn main() -> FsResult<()> {
-    env_logger::builder()
-        .filter_level(log::LevelFilter::Debug)
-        .init();
-
-    // read mode from file
+fn read_mode() -> FsResult<FSMode> {
     let mut f = File::open("test/mode").unwrap();
     let mut b = vec![0u8; std::mem::size_of::<FSMode>()];
     f.read_exact(&mut b).unwrap();
@@ -450,12 +455,53 @@ fn main() -> FsResult<()> {
             info!("Mac: {}", m);
         }
     }
+    Ok(mode.clone())
+}
+
+fn write_mode(mode: FSMode) -> FsResult<()> {
+    match &mode {
+        FSMode::IntegrityOnly(hash) => {
+            let s = hex::encode_upper(hash);
+            debug!("New Mode: IntegrityOnly Mode:");
+            debug!("Hash: {}", s);
+        }
+        FSMode::Encrypted(key, mac) => {
+            debug!("New Mode: Encrypted Mode:");
+            let k = hex::encode_upper(key);
+            let m = hex::encode_upper(mac);
+            debug!("Key: {}", k);
+            debug!("Mac: {}", m);
+        }
+    }
+
+    io_try!(fs::remove_file("test/mode"));
+    let mut f = io_try!(OpenOptions::new().write(true).create_new(true).open("test/mode"));
+    let written = io_try!(f.write(unsafe {
+        std::slice::from_raw_parts(
+            &mode as *const FSMode as *const u8,
+            std::mem::size_of::<FSMode>(),
+        )
+    }));
+
+    assert_eq!(written, std::mem::size_of::<FSMode>());
+
+    Ok(())
+}
+
+fn main() -> FsResult<()> {
+    env_logger::builder()
+        .filter_level(log::LevelFilter::Debug)
+        .init();
+
+    let mode = read_mode()?;
 
     let args: Vec<String> = std::env::args().collect();
     assert!(args.len() >= 2);
     let target = args[1].clone();
 
-    mount_rw(mode.clone(), target)?;
+    let new_mode = mount_rw(mode.clone(), target)?;
+
+    write_mode(new_mode)?;
 
     Ok(())
 }

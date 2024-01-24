@@ -453,7 +453,7 @@ impl RWBuilder {
         max_iid: InodeID,
         itbl_info: (u64, KeyEntry, Hash256),
     ) -> FsResult<FSMode> {
-        let mut bm_blks = BitMap::write_from_list((0..max_iid + 1).collect())?;
+        let mut bm_blks = BitMap::write_from_list((0..=max_iid).collect())?;
         let mut bm_ke = vec![];
         for (i, blk) in bm_blks.iter_mut().enumerate() {
             let pos = 1 + i as u64;

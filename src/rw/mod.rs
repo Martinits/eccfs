@@ -41,6 +41,15 @@ pub struct RWFS {
     sb_meta_for_inode: Arc<RwLock<(usize, usize)>>,
 }
 
+impl Drop for RWFS {
+    fn drop(&mut self) {
+        self.icac.lock().unwrap().abort().unwrap();
+        if let Some(mu_decac) = &self.de_cac {
+            mu_decac.lock().unwrap().abort().unwrap();
+        }
+    }
+}
+
 impl RWFS {
     pub fn new(
         regen_root_key: bool,
@@ -76,7 +85,7 @@ impl RWFS {
             // no possibilty that ibitmap is empty
             return Err(new_error!(FsError::SuperBlockCheckFailed));
         }
-        let mut ibitmap_blks = Vec::with_capacity(sb.ibitmap_len as usize);
+        let mut ibitmap_blks = vec![[0u8; BLK_SZ]; sb.ibitmap_len as usize];
         for (i, (blk, ke)) in ibitmap_blks.iter_mut().zip(sb.ibitmap_ke.iter()).enumerate() {
             let pos = i as u64 + sb.ibitmap_start;
             sb_file.read_blk_to(pos, blk)?;
@@ -105,7 +114,7 @@ impl RWFS {
         let inode_tbl = RWHashTree::new(
             Some(RW_CACHE_CAP_DEFAULT_ITBL),
             Box::new(itbl_storage),
-            sb.itbl_len as u64,
+            mht::get_logi_nr_blk(sb.itbl_len as u64),
             Some(FSMode::from_key_entry(sb.itbl_ke, mode.is_encrypted())),
             mode.is_encrypted(),
         );
@@ -381,7 +390,7 @@ impl FileSystem for RWFS {
 
         // hard links not allowed for directories
         if lock.tp == FileType::Dir {
-            return Err(new_error!(FsError::PermissionDenied));
+            return Err(FsError::PermissionDenied);
         }
 
         lock.nlinks += 1;

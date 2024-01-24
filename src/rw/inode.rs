@@ -556,9 +556,6 @@ impl Inode {
                 let num = if num == 0 {
                     self.size / DIRENT_SZ - offset
                 } else {
-                    debug!("request num {}", num);
-                    debug!("dir size {}", self.size);
-                    debug!("offset {}", offset);
                     assert!(self.size / DIRENT_SZ >= offset);
                     num.min(self.size / DIRENT_SZ - offset)
                 };
@@ -577,7 +574,6 @@ impl Inode {
                     }
                 )?;
                 assert_eq!(len, read);
-                debug!("return de {}", de_list.len());
                 Ok(de_list.into_iter().map(
                     |de| de.into()
                 ).collect())

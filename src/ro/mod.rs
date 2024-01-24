@@ -37,6 +37,12 @@ pub struct ROFS {
 impl Drop for ROFS {
     fn drop(&mut self) {
         self.backend.abort().unwrap();
+        if let Some(mu_icac) = &self.icac {
+            mu_icac.lock().unwrap().abort().unwrap();
+        }
+        if let Some(mu_decac) = &self.de_cac {
+            mu_decac.lock().unwrap().abort().unwrap();
+        }
     }
 }
 

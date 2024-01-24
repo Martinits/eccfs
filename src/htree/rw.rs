@@ -53,6 +53,8 @@ impl RWHashTree {
     }
 
     pub fn resize(&mut self, nr_blk: u64) -> FsResult<()> {
+        // debug!("resize to {}", nr_blk);
+
         let htree_phy_nr_blk = mht::get_phy_nr_blk(nr_blk);
         // if the htree is cut, there should be invalid ke that points to somewhere over length
         // but it's ok, since we don't check anything over length
@@ -328,7 +330,7 @@ impl RWHashTree {
 
     // flush all blocks including root
     pub fn flush(&mut self) -> FsResult<FSMode> {
-        debug!("Flush htree");
+        // debug!("Flush htree");
         for (k, v) in self.cache.flush()?.into_iter() {
             self.write_back(k, v)?;
         }
@@ -344,8 +346,8 @@ impl RWHashTree {
             return Ok(());
         }
 
-        debug!("Flush ke buf");
-        debug!("ke_buf: {:?}", self.ke_buf.keys().collect::<Vec<_>>());
+        // debug!("Flush ke buf");
+        // debug!("ke_buf: {:?}", self.ke_buf.keys().collect::<Vec<_>>());
         let mut buf: HashMap<_, Vec<_>> = HashMap::new();
         for (pos, ke) in mem::take(&mut self.ke_buf) {
             let (f, idx) = mht::get_father_idx(pos);

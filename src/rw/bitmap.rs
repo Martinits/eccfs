@@ -15,17 +15,21 @@ impl BitMap {
             )
         };
         let mut used = HashSet::new();
+        let mut possible_free_pos = bytes.len() as u64 * 8;
         for (i, b) in bytes.iter().enumerate() {
             for off in 0..8 {
+                let iid = (i * 8 + off) as u64;
                 if (*b >> off) & 0x01 == 0x01 {
-                    assert!(used.insert((i * 8 + off) as u64));
+                    assert!(used.insert(iid));
+                } else {
+                    possible_free_pos = possible_free_pos.min(iid);
                 }
             }
         }
 
         Ok(Self {
             used,
-            possible_free_pos: 0,
+            possible_free_pos,
         })
     }
 
@@ -42,6 +46,7 @@ impl BitMap {
                 break;
             }
         }
+        // debug!("bitmap alloc {}", i);
         Ok(i)
     }
 

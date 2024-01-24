@@ -74,6 +74,10 @@ pub mod mht {
         logi_nr_blk + logi_nr_blk.div_ceil(DATA_PER_BLK)
     }
 
+    pub fn get_logi_nr_blk(phy_nr_blk: u64) -> u64 {
+        phy_nr_blk - phy_nr_blk.div_ceil(DATA_PER_BLK + 1)
+    }
+
     pub fn is_idx(phy: u64) -> bool {
         phy % (DATA_PER_BLK + 1) == 0
     }

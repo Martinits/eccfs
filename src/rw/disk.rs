@@ -97,7 +97,7 @@ pub const DIRENT_NAME_MAX: usize = DIRENT_SZ - 12;
 #[repr(C)]
 #[derive(Clone, Debug)]
 pub struct DiskDirEntry {
-    /// inode number, aligned by 128B
+    /// inode number
     pub ipos: u64,
     pub tp: u16,
     /// name length
