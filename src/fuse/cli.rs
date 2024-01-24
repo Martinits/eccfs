@@ -246,8 +246,8 @@ impl Filesystem for EccFs {
         _lock_owner: u64,
         reply: ReplyEmpty,
     ) {
-        fuse_try!(self.fs.isync_meta(ino), reply);
         fuse_try!(self.fs.isync_data(ino), reply);
+        fuse_try!(self.fs.isync_meta(ino), reply);
         reply.ok();
     }
 

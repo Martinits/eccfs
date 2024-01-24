@@ -26,6 +26,13 @@ impl<K: Hash + Eq + Clone, V> Lru<K, V> {
         Ok(())
     }
 
+    pub fn unmark_dirty(&mut self, key: &K) -> FsResult<()> {
+        if let Some(v) = self.0.get_mut(key) {
+            v.1 = false;
+        }
+        Ok(())
+    }
+
     // just use the argument `val`, no need to get again
     // return error if key already exists
     pub fn insert_and_get(
@@ -68,23 +75,27 @@ impl<K: Hash + Eq + Clone, V> Lru<K, V> {
         }
     }
 
-    // try to pop the key, return payload only if key exists, no one is using and it's dirty
-    pub fn try_pop_key(&mut self, k: &K) -> FsResult<Option<V>> {
+    // try to pop the key, return payload only if key exists and no one is using,
+    // no matter whether dirty
+    pub fn try_pop_key(&mut self, k: &K, force: bool) -> FsResult<Option<V>> {
         if let Some((_, (alock, _))) = self.0.get_key_value(&k) {
-            if Arc::<V>::strong_count(alock) == 1 {
-                let (_, (alock, dirty)) = self.0.pop_entry(&k).unwrap();
-                if dirty {
-                    // if dirty, return payload for write back
+            let arc_cnt = Arc::<V>::strong_count(alock);
+            if arc_cnt == 1 {
+                let (alock, dirty) = self.0.pop(&k).unwrap();
+                if force || dirty {
+                    // return payload for write back
                     Ok(Some(Arc::<V>::into_inner(alock).unwrap()))
                 } else {
                     Ok(None)
                 }
             } else {
                 // some one is using it
+                // debug!("lru: flush when {} is using", arc_cnt);
                 Ok(None)
             }
         } else {
             // not found this key
+            // debug!("lru: flush but not found");
             Ok(None)
         }
     }
@@ -147,9 +158,14 @@ where
         key: K,
         reply: Sender<FsResult<()>>,
     },
+    UnMarkDirty {
+        key: K,
+        reply: Sender<FsResult<()>>,
+    },
     Flush {
         key: K,
         reply: Sender<FsResult<Option<V>>>, // possible write back
+        force: bool,
     },
     FlushAll {
         wb: bool,
@@ -226,12 +242,37 @@ where
         rx.recv().map_err(|_| new_error!(FsError::ChannelRecvError))?
     }
 
+    pub fn unmark_dirty(&mut self, key: K) -> FsResult<()> {
+        let (tx, rx) = mpsc::channel();
+
+        self.tx_to_server.send(ChannelReq::UnMarkDirty {
+            key,
+            reply: tx,
+        }).map_err(|_| new_error!(FsError::ChannelSendError))?;
+
+        rx.recv().map_err(|_| new_error!(FsError::ChannelRecvError))?
+    }
+
+    // return even if it's dirty
+    pub fn flush_key_force(&mut self, key: K) -> FsResult<Option<V>> {
+        let (tx, rx) = mpsc::channel();
+
+        self.tx_to_server.send(ChannelReq::Flush {
+            key,
+            reply: tx,
+            force: true,
+        }).map_err(|_| new_error!(FsError::ChannelSendError))?;
+
+        rx.recv().map_err(|_| new_error!(FsError::ChannelRecvError))?
+    }
+
     pub fn flush_key(&mut self, key: K) -> FsResult<Option<V>> {
         let (tx, rx) = mpsc::channel();
 
         self.tx_to_server.send(ChannelReq::Flush {
             key,
             reply: tx,
+            force: false,
         }).map_err(|_| new_error!(FsError::ChannelSendError))?;
 
         rx.recv().map_err(|_| new_error!(FsError::ChannelRecvError))?
@@ -291,8 +332,11 @@ where
             ChannelReq::MarkDirty { key, reply } => {
                 reply.send(self.lru.mark_dirty(&key)).unwrap();
             }
-            ChannelReq::Flush { key, reply } => {
-                reply.send(self.lru.try_pop_key(&key)).unwrap();
+            ChannelReq::UnMarkDirty { key, reply } => {
+                reply.send(self.lru.unmark_dirty(&key)).unwrap();
+            }
+            ChannelReq::Flush { key, reply, force } => {
+                reply.send(self.lru.try_pop_key(&key, force)).unwrap();
             }
             ChannelReq::FlushAll { wb, reply } => {
                 if wb {

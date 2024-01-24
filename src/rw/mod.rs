@@ -149,7 +149,7 @@ impl RWFS {
         )
     }
 
-    fn write_inode(&self, iid: InodeID, inode: Inode) -> FsResult<()> {
+    fn write_back_inode(&self, iid: InodeID, inode: Inode) -> FsResult<()> {
         let ib = inode.destroy()?;
         self.write_itbl(iid, &ib)
     }
@@ -180,7 +180,7 @@ impl RWFS {
             if let Some((iid, rw_inode)) = icac.insert_and_get(iid, &ainode)? {
                 // write back inode
                 let inode = rw_inode.into_inner().unwrap();
-                self.write_inode(iid, inode)?;
+                self.write_back_inode(iid, inode)?;
             }
             ainode
         };
@@ -190,24 +190,37 @@ impl RWFS {
         Ok(ainode)
     }
 
+    fn get_inode_try(&self, iid: InodeID, dirty: bool) -> FsResult<Option<Arc<RwLock<Inode>>>> {
+        let mut icac = mutex_lock!(&self.icac);
+        if let Some(ainode) = icac.get(iid)? {
+            if dirty {
+                icac.mark_dirty(iid)?;
+            }
+            Ok(Some(ainode))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn insert_inode(&self, iid: InodeID, inode: Inode) -> FsResult<()> {
         let mut icac = mutex_lock!(&self.icac);
         let ainode = Arc::new(RwLock::new(inode));
         if let Some((iid, rw_inode)) = icac.insert_and_get(iid, &ainode)? {
             // write back inode
             let inode = rw_inode.into_inner().unwrap();
-            self.write_inode(iid, inode)?;
+            self.write_back_inode(iid, inode)?;
         }
         icac.mark_dirty(iid)?;
         Ok(())
     }
 
     fn remove_inode(&self, iid: InodeID) -> FsResult<()> {
-        let mut icac = mutex_lock!(&self.icac);
-        // load inode
+        // load inode, ensure its in cache
         let _ = self.get_inode(iid, false)?;
-        let ainode = icac.flush_key(iid)?.unwrap();
-        let ino = ainode.into_inner().unwrap();
+
+        let mut icac = mutex_lock!(&self.icac);
+        let lock_inode = icac.flush_key_force(iid)?.unwrap();
+        let ino = lock_inode.into_inner().unwrap();
 
         if ino.tp == FileType::Reg {
             rwlock_write!(self.sb).files -= 1;
@@ -295,8 +308,7 @@ impl FileSystem for RWFS {
         if let Some(inode) = mutex_lock!(&self.icac).flush_all(true)? {
             for (iid, i) in inode {
                 let inode = i.into_inner().unwrap();
-                let ib = inode.destroy()?;
-                self.write_itbl(iid, &ib)?;
+                self.write_back_inode(iid, inode)?;
             }
         }
 
@@ -345,17 +357,19 @@ impl FileSystem for RWFS {
     }
 
     fn isync_meta(&self, iid: InodeID) -> FsResult<()> {
-        let mut icac = mutex_lock!(&self.icac);
-        if let Some(ainode) = icac.flush_key(iid)? {
-            let ib = rwlock_write!(ainode).sync_meta()?;
+        if let Some(lock) = self.get_inode_try(iid, true)? {
+            let ib = rwlock_write!(lock).sync_meta()?;
             self.write_itbl(iid, &ib)?;
+            mutex_lock!(&self.icac).unmark_dirty(iid)?;
         }
-
         Ok(())
     }
 
     fn isync_data(&self, iid: InodeID) -> FsResult<()> {
-        rwlock_write!(self.get_inode(iid, true)?).sync_data()
+        if let Some(lock) = self.get_inode_try(iid, true)? {
+            rwlock_write!(lock).sync_data()?;
+        }
+        Ok(())
     }
 
     fn create(
@@ -404,13 +418,22 @@ impl FileSystem for RWFS {
 
     fn unlink(&self, parent: InodeID, name: &OsStr) -> FsResult<()> {
         let (iid, _) = rwlock_write!(self.get_inode(parent, true)?).remove_child(name)?;
-        let inode = self.get_inode(iid, true)?;
-        let mut lock = rwlock_write!(inode);
-        if lock.nlinks == 1 {
+
+        let do_remove = {
+            let inode = self.get_inode(iid, true)?;
+            let mut lock = rwlock_write!(inode);
+            if lock.nlinks == 1 {
+                true
+            } else {
+                lock.nlinks -= 1;
+                false
+            }
+        };
+
+        if do_remove {
             self.remove_inode(iid)?;
-        } else {
-            lock.nlinks -= 1;
         }
+
         Ok(())
     }
 

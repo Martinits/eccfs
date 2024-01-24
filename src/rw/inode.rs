@@ -400,20 +400,23 @@ impl Inode {
     pub fn write_data(&mut self, offset: usize, from: &[u8]) -> FsResult<usize> {
         self.possible_expand_to_htree(offset + from.len())?;
 
-        match &mut self.ext {
+        let write_end = offset + from.len();
+        let ret = match &mut self.ext {
             InodeExt::Reg { data, .. } => {
                 let written = data.write_exact(offset, from)?;
+                assert_eq!(write_end.div_ceil(BLK_SZ), data.length as usize);
                 Ok(written)
             }
             InodeExt::RegInline(data) => {
                 assert!(data.len() == self.size);
-                let write_end = offset + from.len();
                 data.resize(write_end, 0);
                 data[offset..write_end].copy_from_slice(from);
                 Ok(from.len())
             }
             _ => Err(new_error!(FsError::PermissionDenied)),
-        }
+        };
+        self.size = self.size.max(write_end);
+        ret
     }
 
     fn possible_expand_to_htree(&mut self, write_end: usize) -> FsResult<()> {
@@ -545,6 +548,7 @@ impl Inode {
             InodeExt::Lnk { lnk_name, .. } => *lnk_name = target.into(),
             _ => return Err(new_error!(FsError::PermissionDenied)),
         }
+        self.size = target.as_os_str().as_encoded_bytes().len();
         Ok(())
     }
 
@@ -637,7 +641,7 @@ impl Inode {
 
     pub fn rename_child(&mut self, name: &OsStr, newname: &OsStr) -> FsResult<()> {
         if self.find_child(newname)?.is_some() {
-            return Err(new_error!(FsError::AlreadyExists));
+            return Err(FsError::AlreadyExists);
         }
 
         if let Some((pos, mut de)) = self.find_child_pos(name)? {
@@ -705,7 +709,7 @@ impl Inode {
                 _ => return Err(new_error!(FsError::PermissionDenied)),
             }
         }
-        self.size = self.size.min(end);
+        self.size = self.size.max(end);
         Ok(())
     }
 
