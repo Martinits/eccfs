@@ -304,6 +304,7 @@ impl Into<fuser::FileAttr> for Metadata {
     }
 }
 
+#[derive(Clone)]
 pub enum SetMetadata {
     Size(usize),
     Atime(SystemTime),
