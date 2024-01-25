@@ -225,6 +225,7 @@ impl RWCache {
         self.lru.mark_dirty(&pos)
     }
 
+    #[allow(unused)]
     pub fn flush(&mut self) -> FsResult<Vec<(u64, Block)>> {
         self.lru.flush_wb().map(
             |l| {
@@ -233,5 +234,15 @@ impl RWCache {
                 ).collect()
             }
         )
+    }
+
+    pub fn flush_key(&mut self, pos: u64) -> FsResult<Option<Block>> {
+        Ok(self.lru.try_pop_key(&pos, false)?.map(
+            |payload| payload.into_inner().unwrap()
+        ))
+    }
+
+    pub fn flush_keys(&mut self) -> FsResult<Vec<u64>> {
+        self.lru.flush_keys()
     }
 }

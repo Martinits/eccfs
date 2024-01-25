@@ -310,7 +310,7 @@ pub enum SetMetadata {
     Ctime(SystemTime),
     Mtime(SystemTime),
     Type(FileType),
-    Permission(u16),
+    Permission(FilePerm),
     Uid(u32),
     Gid(u32),
 }

@@ -91,7 +91,7 @@ pub mod mht {
         }
     }
 
-    #[derive(Clone)]
+    #[derive(Clone, Debug)]
     pub enum EntryType {
         Index(u64),
         Data(u64)

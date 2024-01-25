@@ -539,6 +539,7 @@ mod test {
         use std::fs;
         use std::env;
         use std::io::prelude::*;
+        #[allow(unused)]
         use rand_core::RngCore;
 
         env_logger::builder()

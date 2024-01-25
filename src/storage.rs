@@ -63,6 +63,9 @@ impl RWStorage for FileStorage {
         }
         let cur_len = io_try!(self.handle.seek(SeekFrom::End(0)));
 
+        // if blk2byte!(pos) >= cur_len {
+        //     debug!("bad: write pos {} cur_len {}", pos, cur_len);
+        // }
         assert!(blk2byte!(pos) < cur_len);
 
         let position = io_try!(self.handle.seek(SeekFrom::Start(blk2byte!(pos))));
@@ -74,6 +77,7 @@ impl RWStorage for FileStorage {
     }
 
     fn set_len(&mut self, nr_blk: u64) -> FsResult<()> {
+        // debug!("storage set len to {}", nr_blk);
         let len = blk2byte!(nr_blk);
         io_try!(self.handle.set_len(len));
         Ok(())

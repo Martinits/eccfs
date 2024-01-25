@@ -350,7 +350,7 @@ impl Inode {
                     len: 2,
                     name: [0u8; DIRENT_NAME_MAX],
                 };
-                dotdot.name[..1].copy_from_slice("..".as_bytes());
+                dotdot.name[..2].copy_from_slice("..".as_bytes());
                 let dde = vec![dot, dotdot];
                 data.write_exact(0,
                     unsafe {
@@ -362,7 +362,7 @@ impl Inode {
                 )?;
                 inode.size = 2 * DIRENT_SZ;
 
-                assert_eq!(mht::get_phy_nr_blk(data.length), 2);
+                assert_eq!(mht::get_phy_nr_blk(data.logi_len), 2);
                 nf_nb_change(&inode.sb_meta, 1, 2)?;
 
                 InodeExt::Dir {
@@ -398,14 +398,12 @@ impl Inode {
     }
 
     pub fn write_data(&mut self, offset: usize, from: &[u8]) -> FsResult<usize> {
-        self.possible_expand_to_htree(offset + from.len())?;
-
         let write_end = offset + from.len();
+        self.possible_expand_to_htree(write_end)?;
+
         let ret = match &mut self.ext {
             InodeExt::Reg { data, .. } => {
-                let written = data.write_exact(offset, from)?;
-                assert_eq!(write_end.div_ceil(BLK_SZ), data.length as usize);
-                Ok(written)
+                Ok(data.write_exact(offset, from)?)
             }
             InodeExt::RegInline(data) => {
                 assert!(data.len() == self.size);
@@ -441,7 +439,7 @@ impl Inode {
                 );
                 assert_eq!(htree.write_exact(0, data)?, data.len());
 
-                nf_nb_change(&self.sb_meta, 1, mht::get_phy_nr_blk(htree.length) as isize)?;
+                nf_nb_change(&self.sb_meta, 1, mht::get_phy_nr_blk(htree.logi_len) as isize)?;
 
                 (data_file_name, htree)
             }
@@ -450,7 +448,7 @@ impl Inode {
 
         self.ext = InodeExt::Reg {
             data_file_name,
-            htree_org_len: mht::get_phy_nr_blk(htree.length),
+            htree_org_len: mht::get_phy_nr_blk(htree.logi_len),
             data: htree,
         };
 
@@ -526,7 +524,7 @@ impl Inode {
             SetMetadata::Mtime(t) => self.mtime = t,
             SetMetadata::Type(_) => return Err(new_error!(FsError::PermissionDenied)),
             SetMetadata::Permission(perm) => {
-                self.perm = FilePerm::from_bits(perm).unwrap();
+                self.perm = perm;
             }
             SetMetadata::Uid(uid) => self.uid = uid,
             SetMetadata::Gid(gid) => self.gid = gid,
@@ -560,7 +558,10 @@ impl Inode {
                 let num = if num == 0 {
                     self.size / DIRENT_SZ - offset
                 } else {
-                    assert!(self.size / DIRENT_SZ >= offset);
+                    // assert!(self.size / DIRENT_SZ >= offset);
+                    if self.size / DIRENT_SZ < offset {
+                        return Ok(vec![]);
+                    }
                     num.min(self.size / DIRENT_SZ - offset)
                 };
                 let mut de_list: Vec<DiskDirEntry> = Vec::with_capacity(num);
@@ -592,7 +593,9 @@ impl Inode {
         while done < nr_de {
             // try read a block of de
             let round = DIRENT_PER_BLK.min(nr_de - done);
-            for de in self.read_child(done, round)? {
+            let des = self.read_child(done, round)?;
+            let round = des.len();
+            for de in des {
                 if de.name.as_str() == name {
                     return Ok(Some(de.ipos));
                 }
@@ -641,7 +644,7 @@ impl Inode {
 
     pub fn rename_child(&mut self, name: &OsStr, newname: &OsStr) -> FsResult<()> {
         if self.find_child(newname)?.is_some() {
-            return Err(FsError::AlreadyExists);
+            return Err(new_error!(FsError::AlreadyExists));
         }
 
         if let Some((pos, mut de)) = self.find_child_pos(name)? {
@@ -674,6 +677,10 @@ impl Inode {
                     assert_eq!(written, DIRENT_SZ);
                 }
                 self.size -= DIRENT_SZ;
+                // resize htree
+                data.resize(self.size.div_ceil(BLK_SZ) as u64)?;
+
+                // debug!("iid {} remove child left size {}", self.iid, self.size / DIRENT_SZ);
                 Ok((de.ipos, de.tp))
             } else {
                 Err(new_error!(FsError::PermissionDenied))
@@ -683,7 +690,9 @@ impl Inode {
         }
     }
 
-    pub fn fallocate(&mut self, mode: FallocateMode, offset: usize, len: usize) -> FsResult<()> {
+    pub fn fallocate(
+        &mut self, mode: FallocateMode, offset: usize, len: usize,
+    ) -> FsResult<()> {
         let end = offset + len;
         self.possible_expand_to_htree(end)?;
 
@@ -731,8 +740,7 @@ impl Inode {
         Ok(mode)
     }
 
-    // return file changes,  block changes
-    pub fn sync_data(&mut self) -> FsResult<()> {
+    fn reg_force_shape(&mut self) ->FsResult<()> {
         // htree to inline, inline to tree, no REG_INLINE_EXPAND_THRESHOLD
         match &mut self.ext {
             InodeExt::Reg { .. } => {
@@ -747,6 +755,12 @@ impl Inode {
             }
             _ => {},
         }
+        Ok(())
+    }
+
+    // return file changes,  block changes
+    pub fn sync_data(&mut self) -> FsResult<()> {
+        self.reg_force_shape()?;
 
         let mut file_to_remove = None;
         match &mut self.ext {
@@ -802,6 +816,8 @@ impl Inode {
     }
 
     pub fn sync_meta(&mut self) -> FsResult<InodeBytes> {
+        self.reg_force_shape()?;
+
         let base = DInodeBase {
             mode: get_mode(self.tp, &self.perm),
             nlinks: self.nlinks,
@@ -825,7 +841,7 @@ impl Inode {
                 inode.base = base;
                 inode.data_file = fname_ke;
                 inode.data_file_ke = data.get_cur_mode().into_key_entry();
-                inode.len = mht::get_phy_nr_blk(data.length);
+                inode.len = mht::get_phy_nr_blk(data.logi_len);
                 nf_nb_change(&self.sb_meta, 0, inode.len as isize - *htree_org_len as isize)?;
             }
             InodeExt::RegInline(data) => {
@@ -847,7 +863,7 @@ impl Inode {
                 inode.base = base;
                 inode.data_file = fname_ke;
                 inode.data_file_ke = data.get_cur_mode().into_key_entry();
-                inode.len = mht::get_phy_nr_blk(data.length);
+                inode.len = mht::get_phy_nr_blk(data.logi_len);
                 nf_nb_change(&self.sb_meta, 0, inode.len as isize - *htree_org_len as isize)?;
             }
             InodeExt::Lnk { lnk_name, data_file_name, name_file_ke } => {
@@ -881,6 +897,7 @@ impl Inode {
     }
 
     pub fn destroy(mut self) -> FsResult<InodeBytes> {
+        // debug!("destroy inode {}", self.iid);
         self.sync_data()?;
         self.sync_meta()
     }

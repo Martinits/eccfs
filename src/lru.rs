@@ -22,8 +22,10 @@ impl<K: Hash + Eq + Clone, V> Lru<K, V> {
     pub fn mark_dirty(&mut self, key: &K) -> FsResult<()> {
         if let Some(v) = self.0.get_mut(key) {
             v.1 = true;
+            Ok(())
+        } else {
+            Err(new_error!(FsError::NotFound))
         }
-        Ok(())
     }
 
     pub fn unmark_dirty(&mut self, key: &K) -> FsResult<()> {
@@ -75,8 +77,9 @@ impl<K: Hash + Eq + Clone, V> Lru<K, V> {
         }
     }
 
-    // try to pop the key, return payload only if key exists and no one is using,
-    // no matter whether dirty
+    // try to pop the key,
+    // return payload only if key exists and no one is using,
+    // if force is set, return payload even if it's not dirty
     pub fn try_pop_key(&mut self, k: &K, force: bool) -> FsResult<Option<V>> {
         if let Some((_, (alock, _))) = self.0.get_key_value(&k) {
             let arc_cnt = Arc::<V>::strong_count(alock);
@@ -132,6 +135,19 @@ impl<K: Hash + Eq + Clone, V> Lru<K, V> {
                     let payload = Arc::<V>::into_inner(arc).unwrap();
                     // return payload for write back
                     Some((k, payload))
+                } else {
+                    None
+                }
+            }
+        ).collect())
+    }
+
+    // return all keys that can be flushed, no matter dirty
+    pub fn flush_keys(&self) -> FsResult<Vec<K>> {
+        Ok(self.0.iter().filter_map(
+            |(k, arc)| {
+                if Arc::<V>::strong_count(&arc.0) == 1 {
+                    Some(k.clone())
                 } else {
                     None
                 }

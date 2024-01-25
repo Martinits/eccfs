@@ -23,6 +23,9 @@ macro_rules! fuse_try {
         match $res {
             Ok(v) => v,
             Err(e) => {
+                if cfg!(debug_assertions) {
+                    panic!("reply error: {}", e);
+                }
                 $reply.error(e.into());
                 return;
             }
@@ -37,7 +40,11 @@ fn libc_mode_split(mode: u32) -> FsResult<(vfs::FileType, u16)> {
         libc::S_IFLNK => vfs::FileType::Lnk,
         _ => return Err(FsError::NotSupported),
     };
-    Ok((tp, (mode & 0x0777) as u16))
+    Ok((tp, mode as u16 & PERM_MASK))
+}
+
+fn get_perm_from_libc_mode(mode: u32) -> FilePerm {
+    FilePerm::from_bits(mode as u16 & PERM_MASK).unwrap()
 }
 
 impl Filesystem for EccFs {
@@ -87,7 +94,7 @@ impl Filesystem for EccFs {
     ) {
         let mut set_list = Vec::new();
         if let Some(mode) = mode {
-            let (_, perm) = fuse_try!(libc_mode_split(mode), reply);
+            let perm = get_perm_from_libc_mode(mode);
             set_list.push(SetMetadata::Permission(perm));
         }
         if let Some(uid) = uid {
@@ -137,12 +144,12 @@ impl Filesystem for EccFs {
         _umask: u32,
         reply: ReplyEntry,
     ) {
-        let (_, perm) = fuse_try!(libc_mode_split(mode), reply);
+        let perm = get_perm_from_libc_mode(mode);
         let uid = req.uid();
         let gid = req.gid();
         let iid = fuse_try!(self.fs.create(
             parent, name, vfs::FileType::Dir,
-            uid, gid, FilePerm::from_bits(perm).unwrap(),
+            uid, gid, perm,
         ), reply);
         let meta = fuse_try!(self.fs.get_meta(iid), reply);
         reply.entry(&DEFAULT_TTL, &meta.into(), 0);
@@ -332,6 +339,7 @@ impl Filesystem for EccFs {
         _flags: i32,
         reply: ReplyCreate,
     ) {
+        // debug!("creating inode with mode {:02o}", mode);
         let (tp, perm) = fuse_try!(libc_mode_split(mode), reply);
         let uid = req.uid();
         let gid = req.gid();
@@ -373,6 +381,7 @@ impl Filesystem for EccFs {
     }
 }
 
+#[allow(unused)]
 fn mount_ro(mode: FSMode, target: String) -> FsResult<FSMode> {
     debug!("Mounting rofs {}", target);
 
@@ -404,13 +413,14 @@ fn mount_ro(mode: FSMode, target: String) -> FsResult<FSMode> {
     Ok(Arc::into_inner(amode).unwrap().into_inner().unwrap())
 }
 
+#[allow(unused)]
 fn mount_rw(mode: FSMode, target: String) -> FsResult<FSMode> {
     debug!("Mounting rwfs {}", target);
 
     let path = format!("test/{}.rwimage", target);
     let mount = Path::new("test/mnt");
     let rwfs = rw::RWFS::new(
-        false,
+        true,
         Path::new(&path),
         mode.clone(),
         Some(128),

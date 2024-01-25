@@ -321,7 +321,7 @@ impl FileSystem for RWFS {
         let itbl_mode = mutex_lock!(self.inode_tbl).flush()?;
         let mut lock = rwlock_write!(self.sb);
         lock.itbl_ke = itbl_mode.into_key_entry();
-        let new_itbl_len = mht::get_phy_nr_blk(mutex_lock!(self.inode_tbl).length) as usize;
+        let new_itbl_len = mht::get_phy_nr_blk(mutex_lock!(self.inode_tbl).logi_len) as usize;
         nf_nb_change(
             &self.sb_meta_for_inode,
             0,
@@ -391,6 +391,7 @@ impl FileSystem for RWFS {
 
         self.insert_inode(iid, inode)?;
 
+
         if ftype == FileType::Reg {
             rwlock_write!(self.sb).files += 1;
         }
@@ -431,6 +432,7 @@ impl FileSystem for RWFS {
         };
 
         if do_remove {
+            // debug!("unlink do remove parent {} name {:?} iid {}", parent, name, iid);
             self.remove_inode(iid)?;
         }
 
@@ -464,6 +466,15 @@ impl FileSystem for RWFS {
         from: InodeID, name: &OsStr,
         to: InodeID, newname: &OsStr
     ) -> FsResult<()> {
+        // remove to/newname unless it's a non-empty dir
+        if let Some(iid) = self.lookup(to, newname)? {
+            let meta = self.get_meta(iid)?;
+            if meta.ftype == FileType::Dir && meta.size > 2 * DIRENT_SZ as u64 {
+                return Err(FsError::DirectoryNotEmpty);
+            }
+            self.unlink(to, newname)?;
+        }
+
         let from_inode = self.get_inode(from, true)?;
         if from == to {
             rwlock_write!(from_inode).rename_child(name, newname)?;
@@ -476,7 +487,9 @@ impl FileSystem for RWFS {
 
     fn lookup(&self, iid: InodeID, name: &OsStr) -> FsResult<Option<InodeID>> {
         // Currently we don't use de_cac
-        rwlock_write!(self.get_inode(iid, true)?).find_child(name)
+        let ret = rwlock_write!(self.get_inode(iid, true)?).find_child(name)?;
+        // debug!("lookup parent {} name {:?} found {:?}", iid, name, ret);
+        Ok(ret)
     }
 
     fn listdir(
