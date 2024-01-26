@@ -22,7 +22,7 @@ pub type Block = [u8; 4096];
 
 pub const ROOT_INODE_ID: u64 = 1;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FSMode {
     Encrypted(Key128, MAC128),
     IntegrityOnly(Hash256),

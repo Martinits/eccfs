@@ -34,10 +34,10 @@ pub fn build_from_dir(
     encrypted: Option<Key128>,
 ) -> FsResult<FSMode> {
     // check to
-    if fs::metadata(to).is_ok() {
+    if to.exists() {
         return Err(new_error!(FsError::AlreadyExists));
     }
-    let image = io_try!(OpenOptions::new().write(true).create(true).open(to));
+    let image = io_try!(OpenOptions::new().write(true).create_new(true).open(to));
 
     // check from
     if !io_try!(fs::metadata(from)).is_dir() {
@@ -938,9 +938,12 @@ mod test {
         use std::io::prelude::*;
         use rand_core::RngCore;
 
-        env_logger::builder()
-            .filter_level(log::LevelFilter::Debug)
-            .init();
+        if cfg!(debug_assertions) {
+            env::set_var("RUST_BACKTRACE", "1");
+            env_logger::builder()
+                .filter_level(log::LevelFilter::Debug)
+                .init();
+        }
 
         let args: Vec<String> = env::args().collect();
         assert!(args.len() >= 4);
@@ -975,8 +978,9 @@ mod test {
             }
         }
         // save mode to file
-        let _ = fs::remove_file("test/mode");
-        let mut f = OpenOptions::new().write(true).create_new(true).open("test/mode").unwrap();
+        let name = format!("test/{}.mode", target);
+        let _ = fs::remove_file(name.clone());
+        let mut f = OpenOptions::new().write(true).create_new(true).open(name).unwrap();
         let written = f.write(unsafe {
             std::slice::from_raw_parts(
                 &mode as *const FSMode as *const u8,

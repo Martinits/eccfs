@@ -381,6 +381,61 @@ impl Filesystem for EccFs {
     }
 }
 
+fn read_mode(target: String) -> FsResult<FSMode> {
+    let mut f = File::open(format!("test/{}.mode", target)).unwrap();
+    let mut b = vec![0u8; std::mem::size_of::<FSMode>()];
+    f.read_exact(&mut b).unwrap();
+    let mode = unsafe {
+        &*(b.as_ptr() as *const FSMode)
+    };
+    match mode {
+        FSMode::IntegrityOnly(hash) => {
+            let s = hex::encode_upper(hash);
+            info!("Run in IntegrityOnly Mode:");
+            info!("Hash: {}", s);
+        }
+        FSMode::Encrypted(key, mac) => {
+            info!("Run in Encrypted Mode:");
+            let k = hex::encode_upper(key);
+            let m = hex::encode_upper(mac);
+            info!("Key: {}", k);
+            info!("Mac: {}", m);
+        }
+    }
+    Ok(mode.clone())
+}
+
+fn write_mode(mode: FSMode, target: String) -> FsResult<()> {
+    match &mode {
+        FSMode::IntegrityOnly(hash) => {
+            let s = hex::encode_upper(hash);
+            debug!("New Mode: IntegrityOnly Mode:");
+            debug!("Hash: {}", s);
+        }
+        FSMode::Encrypted(key, mac) => {
+            debug!("New Mode: Encrypted Mode:");
+            let k = hex::encode_upper(key);
+            let m = hex::encode_upper(mac);
+            debug!("Key: {}", k);
+            debug!("Mac: {}", m);
+        }
+    }
+
+    let name = format!("test/{}.mode", target);
+    io_try!(fs::remove_file(name.clone()));
+    let mut f = io_try!(OpenOptions::new().write(true).create_new(true).open(name));
+    let written = io_try!(f.write(unsafe {
+        std::slice::from_raw_parts(
+            &mode as *const FSMode as *const u8,
+            std::mem::size_of::<FSMode>(),
+        )
+    }));
+
+    assert_eq!(written, std::mem::size_of::<FSMode>());
+
+    Ok(())
+}
+
 #[allow(unused)]
 fn mount_ro(mode: FSMode, target: String) -> FsResult<FSMode> {
     debug!("Mounting rofs {}", target);
@@ -444,74 +499,98 @@ fn mount_rw(mode: FSMode, target: String) -> FsResult<FSMode> {
     Ok(Arc::into_inner(amode).unwrap().into_inner().unwrap())
 }
 
-fn read_mode() -> FsResult<FSMode> {
-    let mut f = File::open("test/mode").unwrap();
-    let mut b = vec![0u8; std::mem::size_of::<FSMode>()];
-    f.read_exact(&mut b).unwrap();
-    let mode = unsafe {
-        &*(b.as_ptr() as *const FSMode)
+#[allow(unused)]
+fn mount_ovl(mode: Vec<FSMode>, target: Vec<String>) -> FsResult<FSMode> {
+    debug!("Mounting overlay {:?}", target);
+
+    let upper = {
+        let path = format!("test/{}.rwimage", target[0]);
+        rw::RWFS::new(
+            true,
+            Path::new(&path),
+            mode[0].clone(),
+            Some(128),
+            0,
+        )?
     };
-    match mode {
-        FSMode::IntegrityOnly(hash) => {
-            let s = hex::encode_upper(hash);
-            info!("Run in IntegrityOnly Mode:");
-            info!("Hash: {}", s);
-        }
-        FSMode::Encrypted(key, mac) => {
-            info!("Run in Encrypted Mode:");
-            let k = hex::encode_upper(key);
-            let m = hex::encode_upper(mac);
-            info!("Key: {}", k);
-            info!("Mac: {}", m);
-        }
-    }
-    Ok(mode.clone())
-}
 
-fn write_mode(mode: FSMode) -> FsResult<()> {
-    match &mode {
-        FSMode::IntegrityOnly(hash) => {
-            let s = hex::encode_upper(hash);
-            debug!("New Mode: IntegrityOnly Mode:");
-            debug!("Hash: {}", s);
-        }
-        FSMode::Encrypted(key, mac) => {
-            debug!("New Mode: Encrypted Mode:");
-            let k = hex::encode_upper(key);
-            let m = hex::encode_upper(mac);
-            debug!("Key: {}", k);
-            debug!("Mac: {}", m);
-        }
+    let mut lower: Vec<Box<dyn FileSystem>> = vec![];
+    for (mode, p) in mode[1..].into_iter().zip(target[1..].into_iter()) {
+        let path = format!("test/{}.roimage", p);
+        lower.push(Box::new(ro::ROFS::new(
+            Path::new(&path),
+            mode.clone(),
+            128,
+            64,
+            0,
+        )?));
     }
 
-    io_try!(fs::remove_file("test/mode"));
-    let mut f = io_try!(OpenOptions::new().write(true).create_new(true).open("test/mode"));
-    let written = io_try!(f.write(unsafe {
-        std::slice::from_raw_parts(
-            &mode as *const FSMode as *const u8,
-            std::mem::size_of::<FSMode>(),
-        )
-    }));
+    let mount = Path::new("test/mnt");
+    let ovl = overlay::OverlayFS::new(
+        Box::new(upper),
+        lower,
+    )?;
 
-    assert_eq!(written, std::mem::size_of::<FSMode>());
+    let amode = Arc::new(Mutex::new(mode[0].clone()));
 
-    Ok(())
+    fuser::mount2(
+        EccFs {
+            fs: Box::new(ovl),
+            mode: amode.clone(),
+        },
+        mount,
+        &vec![
+            MountOption::AllowOther,
+            MountOption::AutoUnmount,
+        ]
+    ).unwrap();
+
+    Ok(Arc::into_inner(amode).unwrap().into_inner().unwrap())
 }
 
 fn main() -> FsResult<()> {
-    env_logger::builder()
-        .filter_level(log::LevelFilter::Debug)
-        .init();
-
-    let mode = read_mode()?;
+    if cfg!(debug_assertions) {
+        std::env::set_var("RUST_BACKTRACE", "1");
+        env_logger::builder()
+            .filter_level(log::LevelFilter::Debug)
+            .init();
+    }
 
     let args: Vec<String> = std::env::args().collect();
     assert!(args.len() >= 2);
-    let target = args[1].clone();
+    let target: Vec<_> = args[1..].iter().map(|x| x.clone()).collect();
+    let first_target = target[0].clone();
 
-    let new_mode = mount_rw(mode.clone(), target)?;
+    // // run ro
+    // {
+    //     let mode = read_mode(first_target.clone())?;
+    //
+    //     let new_mode = mount_ro(mode.clone(), first_target)?;
+    //
+    //     assert_eq!(mode, new_mode);
+    // }
 
-    write_mode(new_mode)?;
+    // // run rw
+    // {
+    //     let mode = read_mode(first_target.clone())?;
+    //
+    //     let new_mode = mount_rw(mode.clone(), first_target.clone())?;
+    //
+    //     write_mode(new_mode, first_target)?;
+    // }
+
+    // run ovl
+    {
+        let mut mode = vec![];
+        for t in target.iter() {
+            mode.push(read_mode(t.clone())?);
+        }
+
+        let new_mode = mount_ovl(mode, target)?;
+
+        write_mode(new_mode, first_target.clone())?;
+    }
 
     Ok(())
 }

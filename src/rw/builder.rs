@@ -19,17 +19,19 @@ type ChildInfo = (PathBuf, FileType, InodeID);
 const DATA_TEMP_FILE: &str = ".data.eccfs";
 const ITBL_IID: InodeID = InodeID::MAX;
 
-pub fn create_empty(dir: &Path, encrypted: Option<Key128>) -> FsResult<FSMode> {
+pub fn create_empty(to: &Path, encrypted: Option<Key128>) -> FsResult<FSMode> {
     // check to
-    if !io_try!(fs::metadata(dir)).is_dir() {
-        return Err(new_error!(FsError::NotADirectory));
-    }
-    if io_try!(fs::read_dir(dir)).next().is_some() {
-        return Err(new_error!(FsError::DirectoryNotEmpty));
+    if to.exists() {
+        if io_try!(fs::read_dir(to)).next().is_some() {
+            return Err(new_error!(FsError::DirectoryNotEmpty));
+        }
+    } else {
+        info!("{} not found, create dir", to.display());
+        io_try!(fs::create_dir(to));
     }
 
     let mut builder = RWBuilder::new(
-        dir, encrypted,
+        to, encrypted,
     )?;
 
     builder.handle_empty_root_dir()?;
@@ -45,11 +47,13 @@ pub fn build_from_dir(
     encrypted: Option<Key128>,
 ) -> FsResult<FSMode> {
     // check to
-    if !io_try!(fs::metadata(to)).is_dir() {
-        return Err(new_error!(FsError::NotADirectory));
-    }
-    if io_try!(fs::read_dir(to)).next().is_some() {
-        return Err(new_error!(FsError::DirectoryNotEmpty));
+    if to.exists() {
+        if io_try!(fs::read_dir(to)).next().is_some() {
+            return Err(new_error!(FsError::DirectoryNotEmpty));
+        }
+    } else {
+        info!("{} not found, create dir", to.display());
+        io_try!(fs::create_dir(to));
     }
 
     // check from
@@ -542,9 +546,12 @@ mod test {
         #[allow(unused)]
         use rand_core::RngCore;
 
-        env_logger::builder()
-            .filter_level(log::LevelFilter::Debug)
-            .init();
+        if cfg!(debug_assertions) {
+            env::set_var("RUST_BACKTRACE", "1");
+            env_logger::builder()
+                .filter_level(log::LevelFilter::Debug)
+                .init();
+        }
 
         let args: Vec<String> = env::args().collect();
         assert!(args.len() >= 4);
@@ -554,9 +561,9 @@ mod test {
         let from = format!("test/{}", &target);
         let to = format!("test/{}.rwimage", &target);
 
-        // let mut k = Some([0u8; 16]);
-        // rand::thread_rng().fill_bytes(k.as_mut().unwrap());
-        let k = None;
+        let mut k = Some([0u8; 16]);
+        rand::thread_rng().fill_bytes(k.as_mut().unwrap());
+        // let k = None;
 
         let mode = super::build_from_dir(
             Path::new(&from),
@@ -579,8 +586,9 @@ mod test {
             }
         }
         // save mode to file
-        let _ = fs::remove_file("test/mode");
-        let mut f = OpenOptions::new().write(true).create_new(true).open("test/mode").unwrap();
+        let name = format!("test/{}.mode", target);
+        let _ = fs::remove_file(name.clone());
+        let mut f = OpenOptions::new().write(true).create_new(true).open(name).unwrap();
         let written = f.write(unsafe {
             std::slice::from_raw_parts(
                 &mode as *const FSMode as *const u8,
