@@ -558,38 +558,40 @@ fn main() -> FsResult<()> {
     }
 
     let args: Vec<String> = std::env::args().collect();
-    assert!(args.len() >= 2);
-    let target: Vec<_> = args[1..].iter().map(|x| x.clone()).collect();
+    assert!(args.len() >= 3);
+    let fs_tp = args[1].clone();
+    let target: Vec<_> = args[2..].iter().map(|x| x.clone()).collect();
     let first_target = target[0].clone();
 
-    // // run ro
-    // {
-    //     let mode = read_mode(first_target.clone())?;
-    //
-    //     let new_mode = mount_ro(mode.clone(), first_target)?;
-    //
-    //     assert_eq!(mode, new_mode);
-    // }
+    match fs_tp.as_str() {
+        "ro" => {
+            // run ro
+            let mode = read_mode(first_target.clone())?;
 
-    // // run rw
-    // {
-    //     let mode = read_mode(first_target.clone())?;
-    //
-    //     let new_mode = mount_rw(mode.clone(), first_target.clone())?;
-    //
-    //     write_mode(new_mode, first_target)?;
-    // }
+            let new_mode = mount_ro(mode.clone(), first_target)?;
 
-    // run ovl
-    {
-        let mut mode = vec![];
-        for t in target.iter() {
-            mode.push(read_mode(t.clone())?);
+            assert_eq!(mode, new_mode);
         }
+        "rw" => {
+            // run rw
+            let mode = read_mode(first_target.clone())?;
 
-        let new_mode = mount_ovl(mode, target)?;
+            let new_mode = mount_rw(mode.clone(), first_target.clone())?;
 
-        write_mode(new_mode, first_target.clone())?;
+            write_mode(new_mode, first_target)?;
+        }
+        "ovl" => {
+            // run ovl
+            let mut mode = vec![];
+            for t in target.iter() {
+                mode.push(read_mode(t.clone())?);
+            }
+
+            let new_mode = mount_ovl(mode, target)?;
+
+            write_mode(new_mode, first_target.clone())?;
+        }
+        _ => panic!("unrecognized fs type"),
     }
 
     Ok(())

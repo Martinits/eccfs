@@ -344,6 +344,15 @@ impl OverlayFS {
     }
 }
 
+macro_rules! allow_nosys {
+    ($res: expr) => {
+        match $res {
+            Ok(_) | Err(FsError::NotSupported) => {},
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 impl FileSystem for OverlayFS {
     fn init(&self) -> FsResult<()> {
         for fs in self.layers.iter() {
@@ -398,6 +407,7 @@ impl FileSystem for OverlayFS {
         let ino = lock.0.get(&iid).unwrap();
         assert_eq!(ino.tp, FileType::Reg);
         let InodePos(lidx, innd) = ino.ipos[0];
+        assert_eq!(lidx, RW_LAYER_IDX);
         rwlock_read!(self.layers[lidx]).iwrite(innd, offset, from)
     }
 
@@ -431,6 +441,7 @@ impl FileSystem for OverlayFS {
         let lock = rwlock_read!(self.icac);
         let ino = lock.0.get(&iid).unwrap();
         let InodePos(lidx, innd) = ino.ipos[0];
+        assert_eq!(lidx, RW_LAYER_IDX);
         rwlock_read!(self.layers[lidx]).set_meta(innd, set_meta)?;
         Ok(())
     }
@@ -449,6 +460,7 @@ impl FileSystem for OverlayFS {
         let ino = lock.0.get(&iid).unwrap();
         assert_eq!(ino.tp, FileType::Lnk);
         let InodePos(lidx, innd) = ino.ipos[0];
+        assert_eq!(lidx, RW_LAYER_IDX);
         rwlock_read!(self.layers[lidx]).iset_link(innd, new_lnk)?;
         Ok(())
     }
@@ -476,15 +488,15 @@ impl FileSystem for OverlayFS {
         match ino.tp {
             FileType::Reg | FileType::Lnk => {
                 let InodePos(lidx, innd) = ino.ipos[0];
-                rwlock_read!(self.layers[lidx]).isync_data(innd)
+                allow_nosys!(rwlock_read!(self.layers[lidx]).isync_data(innd));
             }
             FileType::Dir => {
                 for InodePos(lidx, innd) in ino.ipos.iter() {
-                    rwlock_read!(self.layers[*lidx]).isync_data(*innd)?;
+                    allow_nosys!(rwlock_read!(self.layers[*lidx]).isync_data(*innd));
                 }
-                Ok(())
             }
         }
+        Ok(())
     }
 
     fn create(
@@ -592,8 +604,8 @@ impl FileSystem for OverlayFS {
 
         let fs = rwlock_read!(self.layers[lidx]);
         match fs.unlink(innd, name) {
-            // Ok(_) | Err(FsError::NotFound) => {
-            Ok(_) => {
+            Ok(_) | Err(FsError::NotFound) => {
+            // Ok(_) => {
                 self.ensure_black_out_file(&fs, innd, name)?;
                 // set black out ro
                 let ino = lock.0.get_mut(&child_iid).unwrap();
@@ -777,6 +789,7 @@ impl FileSystem for OverlayFS {
         let ino = lock.0.get(&iid).unwrap();
         assert_eq!(ino.tp, FileType::Reg);
         let InodePos(lidx, innd) = ino.ipos[0];
+        assert_eq!(lidx, RW_LAYER_IDX);
         rwlock_read!(self.layers[lidx]).fallocate(innd, mode, offset, len)?;
         Ok(())
     }

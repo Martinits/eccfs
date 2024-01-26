@@ -686,7 +686,7 @@ impl Inode {
                 Err(new_error!(FsError::PermissionDenied))
             }
         } else {
-            Err(new_error!(FsError::NotFound))
+            Err(FsError::NotFound)
         }
     }
 

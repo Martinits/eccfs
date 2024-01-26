@@ -946,16 +946,25 @@ mod test {
         }
 
         let args: Vec<String> = env::args().collect();
-        assert!(args.len() >= 4);
-        let target = args[3].clone();
-        debug!("Building {}", target);
+        assert!(args.len() >= 5);
+        let mode = args[3].clone();
+        let target = args[4].clone();
+        debug!("Building ROFS {}", target);
 
         let from = format!("test/{}", &target);
         let to = format!("test/{}.roimage", &target);
 
-        let mut k = Some([0u8; 16]);
-        rand::thread_rng().fill_bytes(k.as_mut().unwrap());
-        // let k = None;
+        let k = match mode.as_str() {
+            "enc" => {
+                let mut k = [0u8; 16];
+                rand::thread_rng().fill_bytes(&mut k);
+                Some(k)
+            }
+            "int" => {
+                None
+            }
+            _ => panic!("unrecognized fsmode"),
+        };
 
         let mode = super::build_from_dir(
             Path::new(&from),
