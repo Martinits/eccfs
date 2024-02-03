@@ -550,13 +550,6 @@ fn mount_ovl(mode: Vec<FSMode>, target: Vec<String>) -> FsResult<FSMode> {
 }
 
 fn main() -> FsResult<()> {
-    if cfg!(debug_assertions) {
-        std::env::set_var("RUST_BACKTRACE", "1");
-        env_logger::builder()
-            .filter_level(log::LevelFilter::Debug)
-            .init();
-    }
-
     let args: Vec<String> = std::env::args().collect();
     assert!(args.len() >= 3);
     let fs_tp = args[1].clone();
@@ -595,4 +588,16 @@ fn main() -> FsResult<()> {
     }
 
     Ok(())
+}
+
+#[test]
+fn test() {
+    if cfg!(debug_assertions) {
+        std::env::set_var("RUST_BACKTRACE", "1");
+        env_logger::builder()
+            .filter_level(log::LevelFilter::Debug)
+            .init();
+    }
+
+    main().unwrap();
 }
