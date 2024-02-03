@@ -69,12 +69,11 @@ impl<K: Hash + Eq + Clone, V> Lru<K, V> {
         let k = res.unwrap().0.clone();
         let (k, (alock, dirty)) = self.0.pop_entry(&k).unwrap();
         if dirty {
-            if let Some(payload) = Arc::<V>::into_inner(alock) {
-                // return payload for write back
-                Ok(Some((k, payload)))
-            } else {
-                Err(new_error!(FsError::UnknownError))
-            }
+            let payload = Arc::<V>::try_unwrap(alock).map_err(
+                |_| new_error!(FsError::UnknownError)
+            ).unwrap();
+            // return payload for write back
+            Ok(Some((k, payload)))
         } else {
             Ok(None)
         }
@@ -90,7 +89,9 @@ impl<K: Hash + Eq + Clone, V> Lru<K, V> {
                 let (alock, dirty) = self.0.pop(&k).unwrap();
                 if force || dirty {
                     // return payload for write back
-                    Ok(Some(Arc::<V>::into_inner(alock).unwrap()))
+                    Ok(Some(Arc::<V>::try_unwrap(alock).map_err(
+                        |_| new_error!(FsError::UnknownError)
+                    ).unwrap()))
                 } else {
                     Ok(None)
                 }
@@ -135,7 +136,9 @@ impl<K: Hash + Eq + Clone, V> Lru<K, V> {
             |k| {
                 let (arc, dirty) = self.0.pop(&k).unwrap();
                 if dirty {
-                    let payload = Arc::<V>::into_inner(arc).unwrap();
+                    let payload = Arc::<V>::try_unwrap(arc).map_err(
+                        |_| FsError::UnknownError
+                    ).unwrap();
                     // return payload for write back
                     Some((k, payload))
                 } else {
