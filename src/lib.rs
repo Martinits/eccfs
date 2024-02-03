@@ -10,7 +10,7 @@ pub(crate) mod lru;
 pub mod error;
 pub use error::*;
 pub use bcache::DEFAULT_CACHE_CAP;
-use crypto::*;
+use self::crypto::*;
 use std::mem::{self, size_of};
 pub use log::{warn, info, debug};
 
