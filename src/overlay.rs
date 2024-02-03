@@ -88,11 +88,10 @@ fn is_black_out_file(name: &OsStr) -> bool {
 }
 
 fn rm_black_out_prefix(name: &PathBuf) -> PathBuf {
-    unsafe {
-        OsStr::from_encoded_bytes_unchecked(
-            &name.as_os_str().as_encoded_bytes()[BLACK_OUT_PREFIX.len()..]
-        )
-    }.into()
+    let mut ret = PathBuf::new();
+    let name_str = &name.as_os_str().to_str().unwrap()[BLACK_OUT_PREFIX.len()..];
+    ret.push(name);
+    ret
 }
 
 impl OverlayFS {

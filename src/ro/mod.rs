@@ -315,7 +315,7 @@ impl FileSystem for ROFS {
         // This only influences SGX deployments, not FUSE,
         // because FUSE leverages kernel's dir entry cache.
 
-        let hash = half_md4(name.as_encoded_bytes())?;
+        let hash = half_md4(name.to_str().unwrap().as_bytes())?;
         match self.get_inode(iid)?.lookup_index(name)? {
             LookUpInfo::External(gstart, glen) => {
                 let step = size_of::<DirEntry>();

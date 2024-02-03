@@ -546,7 +546,7 @@ impl Inode {
             InodeExt::Lnk { lnk_name, .. } => *lnk_name = target.into(),
             _ => return Err(new_error!(FsError::PermissionDenied)),
         }
-        self.size = target.as_os_str().as_encoded_bytes().len();
+        self.size = target.as_os_str().len();
         Ok(())
     }
 
@@ -727,8 +727,8 @@ impl Inode {
         store.set_len(1)?;
 
         let mut blk = [0u8; BLK_SZ];
-        let b = lnk_name.as_os_str().as_encoded_bytes();
-        blk[..b.len()].copy_from_slice(b);
+        let b = lnk_name.as_os_str();
+        blk[..b.len()].copy_from_slice(b.to_str().unwrap().as_bytes());
 
         let mode = crypto_out(
             &mut blk,
@@ -768,7 +768,7 @@ impl Inode {
                 data.flush()?.into_key_entry();
             }
             InodeExt::Lnk { lnk_name, data_file_name, name_file_ke } => {
-                if lnk_name.as_os_str().as_encoded_bytes().len() <= LNK_INLINE_MAX {
+                if lnk_name.as_os_str().len() <= LNK_INLINE_MAX {
                     file_to_remove = Some(data_file_name.clone());
                     self.ext = InodeExt::LnkInline(lnk_name.clone());
                 } else {
@@ -784,7 +784,7 @@ impl Inode {
                 }
             }
             InodeExt::LnkInline(lnk_name) => {
-                if lnk_name.as_os_str().as_encoded_bytes().len() > LNK_INLINE_MAX {
+                if lnk_name.as_os_str().len() > LNK_INLINE_MAX {
                     let data_file_name = new_data_file(
                         self.fs_path.clone(), self.iid
                     )?;
@@ -833,7 +833,7 @@ impl Inode {
             InodeExt::Reg { data_file_name, htree_org_len, data } => {
                 let fname_ke = iid_hash(self.iid)?;
                 let fname = hex::encode_upper(fname_ke);
-                assert_eq!(fname.as_bytes(), data_file_name.as_os_str().as_encoded_bytes());
+                assert_eq!(fname.as_bytes(), data_file_name.as_os_str().to_str().unwrap().as_bytes());
 
                 let inode = unsafe {
                     &mut *(ib.as_mut_ptr() as *mut DInodeReg)
@@ -855,7 +855,7 @@ impl Inode {
             InodeExt::Dir { data_file_name, htree_org_len, data } => {
                 let fname_ke = iid_hash(self.iid)?;
                 let fname = hex::encode_upper(fname_ke);
-                assert_eq!(fname.as_bytes(), data_file_name.as_os_str().as_encoded_bytes());
+                assert_eq!(fname.as_bytes(), data_file_name.as_os_str().to_str().unwrap().as_bytes());
 
                 let inode = unsafe {
                     &mut *(ib.as_mut_ptr() as *mut DInodeDir)
@@ -869,10 +869,10 @@ impl Inode {
             InodeExt::Lnk { lnk_name, data_file_name, name_file_ke } => {
                 let fname_ke = iid_hash(self.iid)?;
                 let fname = hex::encode_upper(fname_ke);
-                assert_eq!(fname.as_bytes(), data_file_name.as_os_str().as_encoded_bytes());
+                assert_eq!(fname.as_bytes(), data_file_name.as_os_str().to_str().unwrap().as_bytes());
 
                 // check link name length
-                let b = lnk_name.as_os_str().as_encoded_bytes();
+                let b = lnk_name.as_os_str();
                 assert!(b.len() < LNK_NAME_MAX);
 
                 let inode = unsafe {
@@ -888,9 +888,9 @@ impl Inode {
                     &mut *(ib.as_mut_ptr() as *mut DInodeLnkInline)
                 };
                 inode.base = base;
-                let b = lnk_name.as_os_str().as_encoded_bytes();
+                let b = lnk_name.as_os_str();
                 assert!(b.len() < LNK_INLINE_MAX);
-                inode.name[..b.len()].copy_from_slice(b);
+                inode.name[..b.len()].copy_from_slice(b.to_str().unwrap().as_bytes());
             }
         }
         Ok(ib)

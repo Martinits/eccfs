@@ -220,7 +220,7 @@ impl RWBuilder {
     ) -> FsResult<Vec<DiskDirEntry>> {
         Ok(cinfo.into_iter().map(
             |(name, tp, iid)| {
-                let bname = name.as_os_str().as_encoded_bytes();
+                let bname = name.as_os_str();
                 assert!(bname.len() < NAME_MAX as usize);
 
                 let mut dde = DiskDirEntry {
@@ -229,7 +229,7 @@ impl RWBuilder {
                     len: bname.len() as u16,
                     name: [0u8; DIRENT_NAME_MAX],
                 };
-                dde.name[..bname.len()].copy_from_slice(bname);
+                dde.name[..bname.len()].copy_from_slice(bname.to_str().unwrap().as_bytes());
                 dde
             }
         ).collect())
@@ -409,7 +409,7 @@ impl RWBuilder {
 
         // for symlnk inodes, size represents sym name length
         let target = io_try!(fs::read_link(path));
-        let size = target.as_os_str().as_encoded_bytes().len();
+        let size = target.as_os_str().len();
         dibase.size = size as u64;
 
         let dinode = if size <= LNK_INLINE_MAX {
@@ -418,13 +418,13 @@ impl RWBuilder {
                 base: dibase,
                 name: [0u8; LNK_INLINE_MAX],
             };
-            d.name[..size].copy_from_slice(target.as_os_str().as_encoded_bytes());
+            d.name[..size].copy_from_slice(target.as_os_str().to_str().unwrap().as_bytes());
             d.into()
         } else {
             // single block file
             let (data_file, mut f) = self.create_data_file_from_iid(iid)?;
             let mut blk = [0u8; BLK_SZ];
-            blk[..size].copy_from_slice(target.as_os_str().as_encoded_bytes());
+            blk[..size].copy_from_slice(target.as_os_str().to_str().unwrap().as_bytes());
             let name_file_ke = crypto_out(
                 &mut blk,
                 if self.encrypted.is_some() {

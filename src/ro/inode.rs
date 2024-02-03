@@ -322,7 +322,7 @@ impl Inode {
                         self.size
                     ));
                 }
-                let hash = half_md4(name.as_encoded_bytes())?;
+                let hash = half_md4(name.to_str().unwrap().as_bytes())?;
                 if let Some(EntryIndex {
                     position, group_len, ..
                 }) = idx_list.iter().rev().find(

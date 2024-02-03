@@ -395,7 +395,7 @@ impl ROBuilder {
                 len: de_raw.name.len() as u16,
                 tp: de_raw.tp,
                 name: self.handle_long_path(
-                        de_raw.name.as_encoded_bytes(),
+                        de_raw.name.to_str().unwrap().as_bytes(),
                         DE_MAX_INLINE_NAME,
                     )?.try_into().unwrap(),
             });
@@ -482,7 +482,7 @@ impl ROBuilder {
                 let name = name.into_os_string();
                 assert!(name.len() < NAME_MAX as usize);
                 DirEntryRaw {
-                    hash: half_md4(name.as_os_str().as_encoded_bytes()).unwrap(),
+                    hash: half_md4(name.as_os_str().to_str().unwrap().as_bytes()).unwrap(),
                     ipos: iid,
                     tp: tp.into(),
                     name,
@@ -668,12 +668,12 @@ impl ROBuilder {
 
         // for symlnk inodes, size represents sym name length
         let target = io_try!(fs::read_link(path));
-        dinode_base.size = target.as_os_str().as_encoded_bytes().len() as u64;
+        dinode_base.size = target.as_os_str().len() as u64;
 
         let dinode_sym = DInodeLnk {
             base: dinode_base,
             name: self.handle_long_path(
-                target.as_os_str().as_encoded_bytes(),
+                target.as_os_str().to_str().unwrap().as_bytes(),
                 DI_LNK_MAX_INLINE_NAME,
             )?.try_into().unwrap(),
         };

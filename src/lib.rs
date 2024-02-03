@@ -1,3 +1,5 @@
+#![feature(int_roundings)]
+
 pub mod vfs;
 pub mod overlay;
 pub mod ro;
