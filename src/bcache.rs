@@ -2,12 +2,15 @@ use std::sync::Arc;
 use crate::storage::ROStorage;
 use crate::*;
 use crate::lru::Lru;
-use std::sync::mpsc::{self, Sender, Receiver};
 use std::sync::RwLock;
-use std::thread;
 use crate::crypto::*;
 
+#[cfg(feature = "ro_cache_server")]
+use std::sync::mpsc::{self, Sender, Receiver};
+#[cfg(feature = "ro_cache_server")]
+use std::thread;
 
+#[cfg(feature = "ro_cache_server")]
 enum ROCacheReq {
     Get {
         pos: u64,
@@ -20,6 +23,7 @@ enum ROCacheReq {
 }
 
 // superblock is not in cache, and stick to memory during runtime
+#[cfg(feature = "ro_cache_server")]
 #[derive(Clone)]
 pub struct ROCache {
     tx_to_server: Sender<ROCacheReq>,
@@ -28,6 +32,7 @@ pub struct ROCache {
 
 pub const DEFAULT_CACHE_CAP: usize = 256;
 
+#[cfg(feature = "ro_cache_server")]
 struct ROCacheServer {
     rx: Receiver<ROCacheReq>,
     lru: Lru<u64, Block>,
@@ -37,6 +42,7 @@ struct ROCacheServer {
 
 // const DEFAULT_CHANNEL_SIZE: usize = 20;
 
+#[cfg(feature = "ro_cache_server")]
 impl ROCache {
     pub fn new(
         backend: Box<dyn ROStorage>,
@@ -103,6 +109,7 @@ impl ROCache {
     }
 }
 
+#[cfg(feature = "ro_cache_server")]
 impl ROCacheServer {
     fn new(
         backend: Box<dyn ROStorage>,
@@ -175,6 +182,71 @@ impl ROCacheServer {
     }
 }
 
+
+#[cfg(not(feature = "ro_cache_server"))]
+pub struct ROCache {
+    lru: Lru<u64, Block>,
+    _capacity: usize,
+    backend: Box<dyn ROStorage>,
+}
+
+impl ROCache {
+    pub fn new(
+        backend: Box<dyn ROStorage>,
+        capacity: usize,
+    ) -> Self {
+        Self {
+            lru: Lru::new(capacity),
+            _capacity: capacity,
+            backend,
+        }
+    }
+
+    fn fetch_from_backend(&mut self, pos: u64, hint: CryptoHint) -> FsResult<Block> {
+        let mut blk = self.backend.read_blk(pos)?;
+        crypto_in(&mut blk, hint)?;
+        Ok(blk)
+    }
+
+    fn cache_miss(&mut self, pos: u64, hint: CryptoHint) -> FsResult<Arc<Block>> {
+        let blk = self.fetch_from_backend(pos, hint)?;
+        let ablk = Arc::new(blk);
+        // read only cache, no write back
+        let _ = self.lru.insert_and_get(pos, &ablk)?;
+        Ok(ablk)
+    }
+
+    pub fn get_blk_try(&mut self, pos: u64, cachable: bool) -> FsResult<Option<Arc<Block>>> {
+        if cachable {
+            self.lru.get(&pos)
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn get_blk_hint(
+        &mut self, pos: u64, cachable: bool, hint: CryptoHint
+    ) -> FsResult<Arc<Block>> {
+        if cachable {
+            match self.lru.get(&pos) {
+                Ok(Some(ablk)) => Ok(ablk),
+                Ok(None) => {
+                    // cache miss, get from backend
+                    self.cache_miss(pos, hint)
+                }
+                Err(e) => Err(e),
+            }
+        } else {
+            self.fetch_from_backend(pos, hint).map(
+                |blk| Arc::new(blk)
+            )
+        }
+    }
+
+    pub fn flush(&mut self) -> FsResult<()> {
+        self.lru.flush_no_wb()
+    }
+}
 
 pub fn rw_cache_cap_defaults(htree_len: usize) -> usize {
     let mut cap = htree_len / 10;

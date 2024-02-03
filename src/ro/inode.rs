@@ -64,7 +64,7 @@ impl Inode {
         raw: &[u8],
         iid: InodeID,
         tp: FileType,
-        backend: ROCache,
+        backend: Arc<Mutex<ROCache>>,
         file_sec_start: u64,
         file_sec_len: u64,
         encrypted: bool,

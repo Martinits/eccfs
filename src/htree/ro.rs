@@ -6,7 +6,7 @@ use super::*;
 
 // members are all readonly except backend, so no need to lock this whole struct
 pub struct ROHashTree {
-    backend: Mutex<ROCache>,
+    backend: Arc<Mutex<ROCache>>,
     start: u64, // in blocks
     length: u64, // in blocks
     encrypted: bool,
@@ -16,7 +16,7 @@ pub struct ROHashTree {
 
 impl ROHashTree {
     pub fn new(
-        backend: ROCache,
+        backend: Arc<Mutex<ROCache>>,
         start: u64,
         length: u64,
         root_hint: FSMode,
@@ -25,7 +25,7 @@ impl ROHashTree {
         let encrypted = root_hint.is_encrypted();
 
         Self {
-            backend: Mutex::new(backend),
+            backend,
             start,
             length,
             encrypted,

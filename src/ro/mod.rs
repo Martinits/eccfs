@@ -25,7 +25,7 @@ pub const NAME_MAX: u64 = u16::MAX as u64;
 pub struct ROFS {
     mode: FSMode,
     cache_data: bool,
-    backend: ROCache,
+    backend: Arc<Mutex<ROCache>>,
     sb: RwLock<SuperBlock>,
     inode_tbl: ROHashTree,
     dirent_tbl: Option<ROHashTree>,
@@ -36,7 +36,6 @@ pub struct ROFS {
 
 impl Drop for ROFS {
     fn drop(&mut self) {
-        self.backend.abort().unwrap();
         if let Some(mu_icac) = &self.icac {
             mu_icac.lock().unwrap().abort().unwrap();
         }
@@ -71,11 +70,12 @@ impl ROFS {
                 cache_data
             }
         );
+        let alock_cac = Arc::new(Mutex::new(cac));
 
         // get hash trees
         assert!(sb.inode_tbl_len != 0);
         let inode_tbl = ROHashTree::new(
-            cac.clone(),
+            alock_cac.clone(),
             sb.inode_tbl_start,
             sb.inode_tbl_len,
             FSMode::from_key_entry(sb.inode_tbl_key, mode.is_encrypted()),
@@ -83,7 +83,7 @@ impl ROFS {
         );
         let dirent_tbl = if sb.dirent_tbl_len != 0 {
             Some(ROHashTree::new(
-                cac.clone(),
+                alock_cac.clone(),
                 sb.dirent_tbl_start,
                 sb.dirent_tbl_len,
                 FSMode::from_key_entry(sb.dirent_tbl_key, mode.is_encrypted()),
@@ -94,7 +94,7 @@ impl ROFS {
         };
         let path_tbl = if sb.path_tbl_len != 0 {
             Some(ROHashTree::new(
-                cac.clone(),
+                alock_cac.clone(),
                 sb.path_tbl_start,
                 sb.path_tbl_len,
                 FSMode::from_key_entry(sb.path_tbl_key, mode.is_encrypted()),
@@ -107,7 +107,7 @@ impl ROFS {
         Ok(ROFS {
             mode,
             sb: RwLock::new(sb),
-            backend: cac.clone(),
+            backend: alock_cac.clone(),
             cache_data: cache_data != 0,
             inode_tbl,
             dirent_tbl,
@@ -265,7 +265,7 @@ impl FileSystem for ROFS {
             mutex_lock!(de_cac).flush_all(false)?;
         }
 
-        self.backend.flush()?;
+        mutex_lock!(self.backend).flush()?;
 
         Ok(())
     }
