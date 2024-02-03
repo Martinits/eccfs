@@ -3,7 +3,10 @@ use std::sync::Arc;
 use std::num::NonZeroUsize;
 extern crate lru;
 use std::hash::Hash;
+
+#[cfg(feature = "channel_lru")]
 use std::sync::mpsc::{self, Sender, Receiver};
+#[cfg(feature = "channel_lru")]
 use std::thread;
 
 pub struct Lru<K: Hash + Eq + Clone, V>(lru::LruCache<K, (Arc<V>, bool)>);
@@ -156,7 +159,7 @@ impl<K: Hash + Eq + Clone, V> Lru<K, V> {
     }
 }
 
-
+#[cfg(feature = "channel_lru")]
 enum ChannelReq<K, V>
 where
     K: Hash + Eq + Clone + Send
@@ -190,6 +193,7 @@ where
     Abort,
 }
 
+#[cfg(feature = "channel_lru")]
 #[derive(Clone)]
 pub struct ChannelLru<K, V>
 where
@@ -199,6 +203,7 @@ where
     tx_to_server: Sender<ChannelReq<K, V>>,
 }
 
+#[cfg(feature = "channel_lru")]
 impl<K, V> ChannelLru<K, V>
 where
     K: Hash + Eq + Clone + Send + 'static,
@@ -269,7 +274,7 @@ where
         rx.recv().map_err(|_| new_error!(FsError::ChannelRecvError))?
     }
 
-    // return even if it's dirty
+    // return even if it's not dirty
     pub fn flush_key_force(&mut self, key: K) -> FsResult<Option<V>> {
         let (tx, rx) = mpsc::channel();
 
@@ -318,6 +323,7 @@ where
     }
 }
 
+#[cfg(feature = "channel_lru")]
 struct ChannelServer<K, V>
 where
     K: Hash + Eq + Clone + Send,
@@ -326,6 +332,7 @@ where
     lru: Lru<K, V>,
 }
 
+#[cfg(feature = "channel_lru")]
 impl<K, V> ChannelServer<K, V>
 where
     K: Hash + Eq + Clone + Send,

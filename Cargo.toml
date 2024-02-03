@@ -30,3 +30,4 @@ path = "src/fuse/cli.rs"
 
 [features]
 ro_cache_server = []
+channel_lru = []

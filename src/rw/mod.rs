@@ -37,12 +37,13 @@ pub struct RWFS {
     sb: RwLock<SuperBlock>,
     ibitmap: Mutex<BitMap>,
     inode_tbl: Mutex<RWHashTree>,
-    icac: Mutex<ChannelLru<InodeID, RwLock<Inode>>>,
-    de_cac: Option<Mutex<ChannelLru<String, InodeID>>>,
+    icac: Mutex<Lru<InodeID, RwLock<Inode>>>,
+    de_cac: Option<Mutex<Lru<String, InodeID>>>,
     key_gen: KeyGen,
     sb_meta_for_inode: Arc<RwLock<(usize, usize)>>,
 }
 
+#[cfg(feature = "channel_lru")]
 impl Drop for RWFS {
     fn drop(&mut self) {
         self.icac.lock().unwrap().abort().unwrap();
@@ -130,11 +131,11 @@ impl RWFS {
             sb: RwLock::new(sb),
             ibitmap: Mutex::new(ibitmap),
             inode_tbl: Mutex::new(inode_tbl),
-            icac: Mutex::new(ChannelLru::new(
+            icac: Mutex::new(Lru::new(
                 icache_cap_hint.unwrap_or(DEFAULT_CACHE_CAP)
             )),
             de_cac: if cache_de != 0 {
-                Some(Mutex::new(ChannelLru::new(cache_de)))
+                Some(Mutex::new(Lru::new(cache_de)))
             } else {
                 None
             },
@@ -174,7 +175,7 @@ impl RWFS {
 
     fn get_inode(&self, iid: InodeID, dirty: bool) -> FsResult<Arc<RwLock<Inode>>> {
         let mut icac = mutex_lock!(&self.icac);
-        let ainode = if let Some(ainode) = icac.get(iid)? {
+        let ainode = if let Some(ainode) = icac.get(&iid)? {
             ainode
         } else {
             // cache miss
@@ -187,16 +188,16 @@ impl RWFS {
             ainode
         };
         if dirty {
-            icac.mark_dirty(iid)?;
+            icac.mark_dirty(&iid)?;
         }
         Ok(ainode)
     }
 
     fn get_inode_try(&self, iid: InodeID, dirty: bool) -> FsResult<Option<Arc<RwLock<Inode>>>> {
         let mut icac = mutex_lock!(&self.icac);
-        if let Some(ainode) = icac.get(iid)? {
+        if let Some(ainode) = icac.get(&iid)? {
             if dirty {
-                icac.mark_dirty(iid)?;
+                icac.mark_dirty(&iid)?;
             }
             Ok(Some(ainode))
         } else {
@@ -212,7 +213,7 @@ impl RWFS {
             let inode = rw_inode.into_inner().unwrap();
             self.write_back_inode(iid, inode)?;
         }
-        icac.mark_dirty(iid)?;
+        icac.mark_dirty(&iid)?;
         Ok(())
     }
 
@@ -221,7 +222,7 @@ impl RWFS {
         let _ = self.get_inode(iid, false)?;
 
         let mut icac = mutex_lock!(&self.icac);
-        let lock_inode = icac.flush_key_force(iid)?.unwrap();
+        let lock_inode = icac.try_pop_key(&iid, true)?.unwrap();
         let ino = lock_inode.into_inner().unwrap();
 
         if ino.tp == FileType::Reg {
@@ -318,15 +319,13 @@ impl FileSystem for RWFS {
     }
 
     fn fsync(&mut self) -> FsResult<()> {
-        if let Some(inode) = mutex_lock!(&self.icac).flush_all(true)? {
-            for (iid, i) in inode {
-                let inode = i.into_inner().unwrap();
-                self.write_back_inode(iid, inode)?;
-            }
+        for (iid, i) in mutex_lock!(&self.icac).flush_wb()? {
+            let inode = i.into_inner().unwrap();
+            self.write_back_inode(iid, inode)?;
         }
 
         if let Some(ref de_cac) = self.de_cac {
-            mutex_lock!(de_cac).flush_all(false)?;
+            mutex_lock!(de_cac).flush_wb()?;
             // no write back, because de cache is not a write buffer
         }
 
@@ -400,7 +399,7 @@ impl FileSystem for RWFS {
         if let Some(lock) = self.get_inode_try(iid, true)? {
             let ib = rwlock_write!(lock).sync_meta()?;
             self.write_itbl(iid, &ib)?;
-            mutex_lock!(&self.icac).unmark_dirty(iid)?;
+            mutex_lock!(&self.icac).unmark_dirty(&iid)?;
         }
         Ok(())
     }

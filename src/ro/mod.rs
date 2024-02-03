@@ -30,12 +30,14 @@ pub struct ROFS {
     inode_tbl: ROHashTree,
     dirent_tbl: Option<ROHashTree>,
     path_tbl: Option<ROHashTree>,
-    icac: Option<Mutex<ChannelLru<InodeID, Inode>>>,
-    de_cac: Option<Mutex<ChannelLru<String, InodeID>>>,
+    icac: Option<Mutex<Lru<InodeID, Inode>>>,
+    de_cac: Option<Mutex<Lru<String, InodeID>>>,
 }
 
+#[cfg(feature = "channel_lru")]
 impl Drop for ROFS {
     fn drop(&mut self) {
+        self.backend.abort().unwrap();
         if let Some(mu_icac) = &self.icac {
             mu_icac.lock().unwrap().abort().unwrap();
         }
@@ -113,12 +115,12 @@ impl ROFS {
             dirent_tbl,
             path_tbl,
             icac: if cache_inode != 0 {
-                Some(Mutex::new(ChannelLru::new(cache_inode)))
+                Some(Mutex::new(Lru::new(cache_inode)))
             } else {
                 None
             },
             de_cac: if cache_de != 0 {
-                Some(Mutex::new(ChannelLru::new(cache_de)))
+                Some(Mutex::new(Lru::new(cache_de)))
             } else {
                 None
             },
@@ -192,7 +194,7 @@ impl ROFS {
     fn get_inode(&self, iid: InodeID) -> FsResult<Arc<Inode>> {
         if let Some(mu_icac) = &self.icac {
             let mut icac = mutex_lock!(mu_icac);
-            if let Some(ainode) = icac.get(iid)? {
+            if let Some(ainode) = icac.get(&iid)? {
                 Ok(ainode)
             } else {
                 // cache miss
@@ -258,11 +260,11 @@ impl FileSystem for ROFS {
 
     fn fsync(&mut self) -> FsResult<()> {
         if let Some(ref icac) = self.icac {
-            mutex_lock!(icac).flush_all(false)?;
+            mutex_lock!(icac).flush_wb()?;
         }
 
         if let Some(ref de_cac) = self.de_cac {
-            mutex_lock!(de_cac).flush_all(false)?;
+            mutex_lock!(de_cac).flush_wb()?;
         }
 
         mutex_lock!(self.backend).flush()?;
@@ -297,7 +299,7 @@ impl FileSystem for ROFS {
 
     fn isync_meta(&self, iid: InodeID) -> FsResult<()> {
         if let Some(ref icac) = self.icac {
-            mutex_lock!(icac).flush_key(iid)?;
+            mutex_lock!(icac).try_pop_key(&iid, false)?;
         }
 
         Ok(())
