@@ -1,5 +1,8 @@
 #![feature(int_roundings)]
+#![cfg_attr(not(any(feature = "builder", feature = "fuse")), no_std)]
 
+
+extern crate alloc;
 pub mod vfs;
 pub mod overlay;
 pub mod ro;
@@ -13,9 +16,11 @@ pub mod error;
 pub use error::*;
 pub use bcache::DEFAULT_CACHE_CAP;
 use self::crypto::*;
-use std::mem::{self, size_of};
+use core::mem::{self, size_of};
 pub use log::{warn, info, debug};
 
+#[cfg(feature = "fuse")]
+mod fuse;
 
 pub const MAX_LOOP_CNT: u64 = 10000;
 
@@ -124,7 +129,7 @@ macro_rules! read_from_blob {
             #[inline]
             fn as_mut(&mut self) -> &mut [u8] {
                 let ptr = self as *mut $T as *mut u8;
-                unsafe { std::slice::from_raw_parts_mut(ptr, std::mem::size_of::<$T>()) }
+                unsafe { core::slice::from_raw_parts_mut(ptr, core::mem::size_of::<$T>()) }
             }
         }
     };
@@ -137,7 +142,7 @@ macro_rules! write_to_blob {
             #[inline]
             fn as_ref(&self) -> &[u8] {
                 let ptr = self as *const $T as *const u8;
-                unsafe { std::slice::from_raw_parts(ptr, std::mem::size_of::<$T>()) }
+                unsafe { core::slice::from_raw_parts(ptr, core::mem::size_of::<$T>()) }
             }
         }
     };
@@ -152,84 +157,26 @@ macro_rules! rw_as_blob {
     };
 }
 
-#[macro_export]
-macro_rules! mutex_lock {
-    ($mu: expr) => {
-        $mu.lock().map_err(|_| new_error!(FsError::MutexError))?
-    };
-}
-
-#[macro_export]
-macro_rules! rwlock_read {
-    ($mu: expr) => {
-        $mu.read().map_err(|_| new_error!(FsError::RwLockError))?
-    };
-}
-
-#[macro_export]
-macro_rules! rwlock_write {
-    ($mu: expr) => {
-        $mu.write().map_err(|_| new_error!(FsError::RwLockError))?
-    };
-}
-
-pub mod io_wrapper {
-    use std::io::prelude::*;
-    use std::io::SeekFrom;
-    use crate::*;
-    use std::mem::size_of;
-    use std::fs::File;
-    use std::io::Write;
-    use std::os::unix::fs::FileExt;
-
-    pub fn write_vec_as_bytes<T>(f: &mut File, v: &Vec<T>) -> FsResult<()> {
-        io_try!(f.write_all(
-            unsafe {
-                std::slice::from_raw_parts(
-                    v.as_ptr() as *const u8,
-                    v.len() * size_of::<T>()
-                )
-            }
-        ));
-        Ok(())
-    }
-
-    pub fn write_file_at(f: &mut File, seek: u64, b: &[u8]) -> FsResult<()> {
-        if io_try!(f.write_at(b, seek)) != b.len() {
-            return Err(new_error!(FsError::UnexpectedEof));
-        }
-        Ok(())
-    }
-
-    pub fn read_file_at(f: &mut File, seek: u64, b: &mut [u8]) -> FsResult<usize> {
-        Ok(io_try!(f.read_at(b, seek)))
-    }
-
-    pub fn get_file_pos(f: &mut File) -> FsResult<u64> {
-        Ok(io_try!(f.seek(SeekFrom::Current(0))))
-    }
-
-    pub fn round_file_up_to_blk(f: &mut File) -> FsResult<u64> {
-        let len = io_try!(f.seek(SeekFrom::End(0))).next_multiple_of(BLK_SZ as u64);
-        io_try!(f.set_len(len));
-        Ok(len / BLK_SZ as u64)
-    }
-
-    pub fn get_file_sz(f: &mut File) -> FsResult<u64> {
-        let org_pos = get_file_pos(f)?;
-        let len = io_try!(f.seek(SeekFrom::End(0)));
-        io_try!(f.seek(SeekFrom::Start(org_pos)));
-        Ok(len)
-    }
-
-    #[macro_export]
-    macro_rules! io_try {
-        ($e: expr) => {
-            $e.map_err(|e| new_error!(FsError::IOError(e)))?
-        };
-    }
-}
-pub use io_wrapper::*;
+// #[macro_export]
+// macro_rules! mutex_lock {
+//     ($mu: expr) => {
+//         $mu.lock().map_err(|_| new_error!(FsError::MutexError))?
+//     };
+// }
+//
+// #[macro_export]
+// macro_rules! rwlock_read {
+//     ($mu: expr) => {
+//         $mu.read().map_err(|_| new_error!(FsError::RwLockError))?
+//     };
+// }
+//
+// #[macro_export]
+// macro_rules! rwlock_write {
+//     ($mu: expr) => {
+//         $mu.write().map_err(|_| new_error!(FsError::RwLockError))?
+//     };
+// }
 
 #[macro_export]
 macro_rules! blk2byte {

@@ -1,16 +1,16 @@
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
-use crate::*;
 use std::fs::{OpenOptions, self, File};
-use crate::crypto::*;
-use crate::vfs::*;
-use super::*;
-use super::disk::*;
-use super::superblock::*;
+use eccfs::crypto::*;
+use eccfs::vfs::*;
+use eccfs::*;
+use eccfs::rw::*;
+use eccfs::rw::disk::*;
+use eccfs::rw::superblock::*;
 use std::collections::HashMap;
 use std::os::unix::fs::MetadataExt;
 use std::io::Write;
-use crate::htree::*;
+use eccfs::htree::*;
 use std::time::*;
 
 
@@ -553,7 +553,7 @@ mod test {
                 .init();
         }
 
-        let args: Vec<String> = env::args().collect();
+        let args: Vec<PathBuf> = env::args().collect();
         assert!(args.len() >= 5);
         let mode = args[3].clone();
         let target = args[4].clone();
@@ -623,7 +623,7 @@ mod test {
                 .init();
         }
 
-        let args: Vec<String> = env::args().collect();
+        let args: Vec<PathBuf> = env::args().collect();
         assert!(args.len() >= 5);
         let mode = args[3].clone();
         let target = args[4].clone();

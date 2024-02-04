@@ -1,8 +1,12 @@
 use crate::*;
 use crate::vfs::*;
-use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
-use std::collections::{HashMap, HashSet};
-use std::ffi::OsString;
+use spin::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use alloc::collections::{BTreeMap, BTreeSet};
+
+extern crate alloc;
+use alloc::vec::Vec;
+use alloc::boxed::Box;
+use alloc::string::{String, ToString};
 
 
 #[derive(Clone, Debug)]
@@ -18,7 +22,7 @@ pub struct Inode {
     // last valid ancestor's idx in full_path
     rw_fidx: isize,
     // full path from root dir, with perm, uid, gid
-    full_path: Vec<(OsString, FilePerm, u32, u32)>,
+    full_path: Vec<(String, FilePerm, u32, u32)>,
     // existing inodes in the lower layers
     // for reg and sym, len is only 1
     ipos: Vec<InodePos>,
@@ -28,23 +32,23 @@ pub struct Inode {
     black_out_ro: bool,
     // cached dir entries: all children here are allocated an iid and sotred in icac
     // useful only for dirs
-    children: Option<HashMap<PathBuf, (FileType, InodeID)>>,
+    children: Option<BTreeMap<String, (FileType, InodeID)>>,
 }
 
 // impl Inode {
-//     fn add_child(&mut self, name: &OsStr, tp: FileType, iid: InodeID) {
+//     fn add_child(&mut self, name: &str, tp: FileType, iid: InodeID) {
 //         let (map, l) = self.children.as_mut().unwrap();
 //         map.insert(name.into(), l.len());
 //         l.push((name.into(), tp, iid));
 //     }
 //
-//     fn remove_child(&mut self, name: &OsStr) -> (PathBuf, FileType, InodeID) {
+//     fn remove_child(&mut self, name: &str) -> (String, FileType, InodeID) {
 //         let (map, l) = self.children.as_mut().unwrap();
-//         let idx = map.remove(&PathBuf::from(name)).unwrap();
+//         let idx = map.remove(&String::from(name)).unwrap();
 //         l.remove(idx)
 //     }
 //
-//     fn find_child(&self, name: &OsStr) -> Option<(PathBuf, FileType, InodeID)> {
+//     fn find_child(&self, name: &str) -> Option<(String, FileType, InodeID)> {
 //         let (map, l) = self.children.as_ref().unwrap();
 //         map.iter().find(
 //             |(pb, _)| pb.as_os_str() == name
@@ -55,7 +59,7 @@ pub struct Inode {
 //         )
 //     }
 //
-//     fn list_child(&self, offset: usize, num: usize) -> Vec<(PathBuf, FileType, InodeID)> {
+//     fn list_child(&self, offset: usize, num: usize) -> Vec<(String, FileType, InodeID)> {
 //         let (_, l) = self.children.as_ref().unwrap();
 //         let end = if num == 0 {
 //             l.len()
@@ -74,24 +78,21 @@ pub struct OverlayFS {
     /// filesystem layers, 0 is RW layer
     layers: Vec<RwLock<Box<dyn FileSystem>>>,
     /// inode cache, all found inodes are here, second number is next_iid
-    icac: RwLock<(HashMap<InodeID, Inode>, InodeID)>,
+    icac: RwLock<(BTreeMap<InodeID, Inode>, InodeID)>,
 }
 
 const BLACK_OUT_PREFIX: &str = ".blacked.";
 
-fn black_out_file_of(name: &OsStr) -> PathBuf {
-    format!("{}{}", BLACK_OUT_PREFIX, name.to_str().unwrap()).into()
+fn black_out_file_of(name: &str) -> String {
+    alloc::format!("{}{}", BLACK_OUT_PREFIX, name)
 }
 
-fn is_black_out_file(name: &OsStr) -> bool {
-    name.to_str().unwrap().starts_with(BLACK_OUT_PREFIX)
+fn is_black_out_file(name: &str) -> bool {
+    name.starts_with(BLACK_OUT_PREFIX)
 }
 
-fn rm_black_out_prefix(name: &PathBuf) -> PathBuf {
-    let mut ret = PathBuf::new();
-    let name_str = &name.as_os_str().to_str().unwrap()[BLACK_OUT_PREFIX.len()..];
-    ret.push(name);
-    ret
+fn rm_black_out_prefix(name: &str) -> String {
+    name[BLACK_OUT_PREFIX.len()..].to_string()
 }
 
 impl OverlayFS {
@@ -103,7 +104,7 @@ impl OverlayFS {
         lower.insert(RW_LAYER_IDX, upper);
         let layers = lower;
 
-        let mut ipos = vec![];
+        let mut ipos = Vec::new();
         for (i, layer) in layers.iter().enumerate() {
             let meta = layer.get_meta(ROOT_INODE_ID)?;
             if meta.ftype != FileType::Dir {
@@ -116,13 +117,13 @@ impl OverlayFS {
             tp: FileType::Dir,
             rw_fiid: ROOT_INODE_ID,
             rw_fidx: -1,
-            full_path: vec![],
+            full_path: Vec::new(),
             ipos,
             black_out_ro: false, // root inode of lower layers must not be blacked
             children: None,
         };
 
-        let mut map = HashMap::new();
+        let mut map = BTreeMap::new();
         map.insert(ROOT_INODE_ID, root_inode);
 
 
@@ -136,13 +137,13 @@ impl OverlayFS {
 
     #[allow(unused)]
     fn insert_inode(&self, inode: Inode) -> FsResult<InodeID> {
-        let mut lock = rwlock_write!(self.icac);
+        let mut lock = self.icac.write();
         self.insert_inode_with_lock(&mut lock, inode)
     }
 
     fn insert_inode_with_lock(
         &self,
-        lock: &mut RwLockWriteGuard<(HashMap<u64, Inode>, u64)>,
+        lock: &mut RwLockWriteGuard<(BTreeMap<u64, Inode>, u64)>,
         inode: Inode
     ) -> FsResult<InodeID> {
         let iid = lock.1;
@@ -155,7 +156,7 @@ impl OverlayFS {
     // for reg and sym, copy file content
     // for dir, create new dir in RW only
     fn ensure_copy_up(&self, iid: InodeID) -> FsResult<()> {
-        let mut lock = rwlock_write!(self.icac);
+        let mut lock = self.icac.write();
         let ino = lock.0.get_mut(&iid).unwrap();
 
         if ino.rw_fidx == ino.full_path.len() as isize - 1 {
@@ -165,7 +166,7 @@ impl OverlayFS {
         // crate all intermediate dirs
         let mut idx = ino.rw_fidx + 1;
         let mut father = ino.rw_fiid;
-        let rwfs_lock = rwlock_read!(self.layers[RW_LAYER_IDX]);
+        let rwfs_lock = self.layers[RW_LAYER_IDX].read();
         while idx < ino.full_path.len() as isize - 1 {
             let path = &ino.full_path[idx as usize];
             match rwfs_lock.create(
@@ -200,7 +201,7 @@ impl OverlayFS {
                 let mut buf = [0u8; BLK_SZ];
                 let mut done = 0;
                 loop {
-                    let read = rwlock_read!(self.layers[lidx]).iread(innd, done, &mut buf)?;
+                    let read = self.layers[lidx].read().iread(innd, done, &mut buf)?;
                     let write = rwfs_lock.iwrite(new_iid, done, &buf[..read])?;
                     assert_eq!(read, write);
                     if read != BLK_SZ {
@@ -216,8 +217,8 @@ impl OverlayFS {
             FileType::Lnk => {
                 assert_eq!(ino.ipos.len(), 1);
                 let InodePos(lidx, innd) = ino.ipos[0];
-                let lname = rwlock_read!(self.layers[lidx]).iread_link(innd)?;
-                rwfs_lock.iset_link(new_iid, lname.as_os_str())?;
+                let lname = self.layers[lidx].read().iread_link(innd)?;
+                rwfs_lock.iset_link(new_iid, &lname)?;
                 ino.ipos[0] = InodePos(RW_LAYER_IDX, new_iid);
             }
         }
@@ -232,13 +233,13 @@ impl OverlayFS {
         &self,
         fs: &RwLockReadGuard<'_, Box<dyn FileSystem>>,
         parent: InodeID,
-        name: &OsStr,
+        name: &str,
     ) -> FsResult<()> {
         let blk_name = black_out_file_of(name);
-        if fs.lookup(parent, blk_name.as_os_str())?.is_none() {
+        if fs.lookup(parent, &blk_name)?.is_none() {
             let Metadata { uid, gid, .. } = fs.get_meta(parent)?;
             fs.create(
-                parent, blk_name.as_os_str(),
+                parent, &blk_name,
                 FileType::Reg, uid, gid, FilePerm::from_bits(0o000).unwrap(),
             )?;
         }
@@ -251,7 +252,7 @@ impl OverlayFS {
     }
 
     fn ensure_children_cached(&self, iid: InodeID) -> FsResult<()> {
-        let mut lock = rwlock_write!(self.icac);
+        let mut lock = self.icac.write();
 
         let parent_ino = {
             let parent = lock.0.get(&iid).unwrap();
@@ -269,18 +270,18 @@ impl OverlayFS {
 
         // debug!("caching children of parent: {:?}", parent_ino);
 
-        let mut blk_out_files = HashSet::new();
-        let mut map = HashMap::new();
+        let mut blk_out_files = BTreeSet::new();
+        let mut map = BTreeMap::new();
         for InodePos(lidx, innd) in parent_ino.ipos.iter().filter(
             |InodePos(lidx, _)| *lidx == RW_LAYER_IDX || !parent_ino.black_out_ro
         ) {
-            let fs = rwlock_read!(self.layers[*lidx]);
+            let fs = self.layers[*lidx].read();
             // debug!("processing layer {} innd {}", lidx, innd);
 
             let mut offset = 0;
             while let Some((child_innd, name, tp)) = fs.next_entry(*innd, offset)? {
                 // debug!("child {} innd {} tp {:?}", name.display(), child_innd, tp);
-                if *lidx == RW_LAYER_IDX && is_black_out_file(name.as_os_str()) {
+                if *lidx == RW_LAYER_IDX && is_black_out_file(name.as_str()) {
                     // debug!("is black out file, remember it");
                     blk_out_files.insert(rm_black_out_prefix(&name));
                 } else if let Some((upper_tp, iid)) = map.get(&name) {
@@ -320,12 +321,14 @@ impl OverlayFS {
                         }
                     };
 
+                    let mut ipos = Vec::new();
+                    ipos.push(InodePos(*lidx, child_innd));
                     let new_ino = Inode {
                         tp,
                         rw_fiid,
                         rw_fidx,
                         full_path,
-                        ipos: vec![InodePos(*lidx, child_innd)],
+                        ipos,
                         black_out_ro,
                         children: None,
                     };
@@ -355,20 +358,20 @@ macro_rules! allow_nosys {
 impl FileSystem for OverlayFS {
     fn init(&self) -> FsResult<()> {
         for fs in self.layers.iter() {
-            rwlock_read!(fs).init()?;
+            fs.read().init()?;
         }
         Ok(())
     }
 
     fn destroy(&mut self) -> FsResult<FSMode> {
         for fs in self.layers[1..].iter() {
-            rwlock_write!(fs).destroy()?;
+            fs.write().destroy()?;
         }
-        rwlock_write!(self.layers[RW_LAYER_IDX]).destroy()
+        self.layers[RW_LAYER_IDX].write().destroy()
     }
 
     fn finfo(&self) -> FsResult<FsInfo> {
-        let mut info = rwlock_read!(self.layers[RW_LAYER_IDX]).finfo()?;
+        let mut info = self.layers[RW_LAYER_IDX].read().finfo()?;
         for fs in self.layers[1..].iter() {
             let FsInfo {
                 blocks,
@@ -376,7 +379,7 @@ impl FileSystem for OverlayFS {
                 files,
                 namemax,
                 ..
-            } = rwlock_read!(fs).finfo()?;
+            } = fs.read().finfo()?;
             info.blocks += blocks;
             info.bfree += bfree;
             info.files += files;
@@ -387,46 +390,46 @@ impl FileSystem for OverlayFS {
 
     fn fsync(&mut self) -> FsResult<()> {
         for fs in self.layers.iter().rev() {
-            rwlock_write!(fs).fsync()?;
+            fs.write().fsync()?;
         }
         Ok(())
     }
 
     fn iread(&self, iid: InodeID, offset: usize, to: &mut [u8]) -> FsResult<usize> {
-        let lock = rwlock_read!(self.icac);
+        let lock = self.icac.read();
         let ino = lock.0.get(&iid).unwrap();
         assert_eq!(ino.tp, FileType::Reg);
         let InodePos(lidx, innd) = ino.ipos[0];
-        rwlock_read!(self.layers[lidx]).iread(innd, offset, to)
+        self.layers[lidx].read().iread(innd, offset, to)
     }
 
     fn iwrite(&self, iid: InodeID, offset: usize, from: &[u8]) -> FsResult<usize> {
         self.ensure_copy_up(iid)?;
-        let lock = rwlock_read!(self.icac);
+        let lock = self.icac.read();
         let ino = lock.0.get(&iid).unwrap();
         assert_eq!(ino.tp, FileType::Reg);
         let InodePos(lidx, innd) = ino.ipos[0];
         assert_eq!(lidx, RW_LAYER_IDX);
-        rwlock_read!(self.layers[lidx]).iwrite(innd, offset, from)
+        self.layers[lidx].read().iwrite(innd, offset, from)
     }
 
     fn get_meta(&self, iid: InodeID) -> FsResult<Metadata> {
-        let lock = rwlock_read!(self.icac);
+        let lock = self.icac.read();
         let ino = lock.0.get(&iid).unwrap();
         let InodePos(lidx, innd) = ino.ipos[0];
         match ino.tp {
             FileType::Reg | FileType::Lnk => {
-                let mut meta = rwlock_read!(self.layers[lidx]).get_meta(innd)?;
+                let mut meta = self.layers[lidx].read().get_meta(innd)?;
                 meta.iid = iid;
                 Ok(meta)
             }
             FileType::Dir => {
                 let InodePos(top_lidx, top_innd) = ino.ipos[0].clone();
-                let mut meta = rwlock_read!(self.layers[top_lidx]).get_meta(top_innd)?;
+                let mut meta = self.layers[top_lidx].read().get_meta(top_innd)?;
                 meta.iid = iid;
                 meta.ftype = FileType::Dir;
                 for InodePos(lidx, innd) in ino.ipos.iter().skip(1) {
-                    let mt = rwlock_read!(self.layers[*lidx]).get_meta(*innd)?;
+                    let mt = self.layers[*lidx].read().get_meta(*innd)?;
                     meta.size += mt.size;
                     meta.blocks += mt.blocks;
                 }
@@ -437,44 +440,44 @@ impl FileSystem for OverlayFS {
 
     fn set_meta(&self, iid: InodeID, set_meta: SetMetadata) -> FsResult<()> {
         self.ensure_copy_up(iid)?;
-        let lock = rwlock_read!(self.icac);
+        let lock = self.icac.read();
         let ino = lock.0.get(&iid).unwrap();
         let InodePos(lidx, innd) = ino.ipos[0];
         assert_eq!(lidx, RW_LAYER_IDX);
-        rwlock_read!(self.layers[lidx]).set_meta(innd, set_meta)?;
+        self.layers[lidx].read().set_meta(innd, set_meta)?;
         Ok(())
     }
 
-    fn iread_link(&self, iid: InodeID) -> FsResult<PathBuf> {
-        let lock = rwlock_read!(self.icac);
+    fn iread_link(&self, iid: InodeID) -> FsResult<String> {
+        let lock = self.icac.read();
         let ino = lock.0.get(&iid).unwrap();
         assert_eq!(ino.tp, FileType::Lnk);
         let InodePos(lidx, innd) = ino.ipos[0];
-        rwlock_read!(self.layers[lidx]).iread_link(innd)
+        self.layers[lidx].read().iread_link(innd)
     }
 
-    fn iset_link(&self, iid: InodeID, new_lnk: &OsStr) -> FsResult<()> {
+    fn iset_link(&self, iid: InodeID, new_lnk: &str) -> FsResult<()> {
         self.ensure_copy_up(iid)?;
-        let lock = rwlock_read!(self.icac);
+        let lock = self.icac.read();
         let ino = lock.0.get(&iid).unwrap();
         assert_eq!(ino.tp, FileType::Lnk);
         let InodePos(lidx, innd) = ino.ipos[0];
         assert_eq!(lidx, RW_LAYER_IDX);
-        rwlock_read!(self.layers[lidx]).iset_link(innd, new_lnk)?;
+        self.layers[lidx].read().iset_link(innd, new_lnk)?;
         Ok(())
     }
 
     fn isync_meta(&self, iid: InodeID) -> FsResult<()> {
-        let lock = rwlock_read!(self.icac);
+        let lock = self.icac.read();
         let ino = lock.0.get(&iid).unwrap();
         match ino.tp {
             FileType::Reg | FileType::Lnk => {
                 let InodePos(lidx, innd) = ino.ipos[0];
-                rwlock_read!(self.layers[lidx]).isync_meta(innd)
+                self.layers[lidx].read().isync_meta(innd)
             }
             FileType::Dir => {
                 for InodePos(lidx, innd) in ino.ipos.iter() {
-                    rwlock_read!(self.layers[*lidx]).isync_meta(*innd)?;
+                    self.layers[*lidx].read().isync_meta(*innd)?;
                 }
                 Ok(())
             }
@@ -482,16 +485,16 @@ impl FileSystem for OverlayFS {
     }
 
     fn isync_data(&self, iid: InodeID) -> FsResult<()> {
-        let lock = rwlock_read!(self.icac);
+        let lock = self.icac.read();
         let ino = lock.0.get(&iid).unwrap();
         match ino.tp {
             FileType::Reg | FileType::Lnk => {
                 let InodePos(lidx, innd) = ino.ipos[0];
-                allow_nosys!(rwlock_read!(self.layers[lidx]).isync_data(innd));
+                allow_nosys!(self.layers[lidx].read().isync_data(innd));
             }
             FileType::Dir => {
                 for InodePos(lidx, innd) in ino.ipos.iter() {
-                    allow_nosys!(rwlock_read!(self.layers[*lidx]).isync_data(*innd));
+                    allow_nosys!(self.layers[*lidx].read().isync_data(*innd));
                 }
             }
         }
@@ -501,7 +504,7 @@ impl FileSystem for OverlayFS {
     fn create(
         &self,
         parent: InodeID,
-        name: &OsStr,
+        name: &str,
         ftype: FileType,
         uid: u32,
         gid: u32,
@@ -517,21 +520,23 @@ impl FileSystem for OverlayFS {
         self.ensure_children_cached(parent)?;
         self.ensure_copy_up(parent)?;
 
-        let mut lock = rwlock_write!(self.icac);
+        let mut lock = self.icac.write();
         let ino = lock.0.get_mut(&parent).unwrap().clone();
         assert_eq!(ino.tp, FileType::Dir);
 
         let InodePos(lidx, innd) = ino.ipos[0];
         let (new_innd, blk_out_file_exist) = {
-            let lock = rwlock_read!(self.layers[lidx]);
+            let lock = self.layers[lidx].read();
             (
                 lock.create(innd, name, ftype, uid, gid, perm)?,
-                lock.lookup(innd, black_out_file_of(name).as_os_str())?.is_some()
+                lock.lookup(innd, black_out_file_of(name).as_str())?.is_some()
             )
         };
 
         let mut full_path = ino.full_path.clone();
         full_path.push((name.into(), perm, uid, gid));
+        let mut ipos = Vec::new();
+        ipos.push(InodePos(RW_LAYER_IDX, new_innd));
         let new_ino = Inode {
             tp: ftype,
             rw_fiid: new_innd,
@@ -539,7 +544,7 @@ impl FileSystem for OverlayFS {
             full_path,
             // create sth means this name does not exist in any lower layers,
             // or it is blacked out, so the new overlay inode has no lower layers
-            ipos: vec![InodePos(RW_LAYER_IDX, new_innd)],
+            ipos,
             black_out_ro: ino.black_out_ro | blk_out_file_exist,
             children: None,
         };
@@ -552,7 +557,7 @@ impl FileSystem for OverlayFS {
         Ok(new_iid)
     }
 
-    fn link(&self, parent: InodeID, name: &OsStr, linkto: InodeID) -> FsResult<()> {
+    fn link(&self, parent: InodeID, name: &str, linkto: InodeID) -> FsResult<()> {
         if is_black_out_file(name) {
             return Err(new_error!(FsError::PermissionDenied));
         }
@@ -564,7 +569,7 @@ impl FileSystem for OverlayFS {
         self.ensure_copy_up(linkto)?;
         self.ensure_children_cached(parent)?;
 
-        let mut lock = rwlock_write!(self.icac);
+        let mut lock = self.icac.write();
         let to = lock.0.get(&linkto).unwrap();
         let tp = to.tp;
         if tp == FileType::Dir {
@@ -577,14 +582,14 @@ impl FileSystem for OverlayFS {
         let InodePos(f_lidx, f_innd) = fino.ipos[0].clone();
         assert_eq!(f_lidx, RW_LAYER_IDX);
 
-        rwlock_read!(self.layers[f_lidx]).link(f_innd, name, to_innd)?;
+        self.layers[f_lidx].read().link(f_innd, name, to_innd)?;
 
         fino.children.as_mut().unwrap().insert(name.into(), (tp, linkto));
 
         Ok(())
     }
 
-    fn unlink(&self, parent: InodeID, name: &OsStr) -> FsResult<()> {
+    fn unlink(&self, parent: InodeID, name: &str) -> FsResult<()> {
         if is_black_out_file(name) {
             return Err(new_error!(FsError::PermissionDenied));
         }
@@ -596,12 +601,12 @@ impl FileSystem for OverlayFS {
             || new_error!(FsError::NotFound)
         )?;
 
-        let mut lock = rwlock_write!(self.icac);
+        let mut lock = self.icac.write();
         let fino = lock.0.get(&parent).unwrap();
         let InodePos(lidx, innd) = fino.ipos[0].clone();
         assert_eq!(lidx, RW_LAYER_IDX);
 
-        let fs = rwlock_read!(self.layers[lidx]);
+        let fs = self.layers[lidx].read();
         match fs.unlink(innd, name) {
             Ok(_) | Err(FsError::NotFound) => {
             // Ok(_) => {
@@ -614,7 +619,7 @@ impl FileSystem for OverlayFS {
         }
 
         let fino = lock.0.get_mut(&parent).unwrap();
-        fino.children.as_mut().unwrap().remove(&PathBuf::from(name));
+        fino.children.as_mut().unwrap().remove(&String::from(name));
 
         Ok(())
     }
@@ -622,8 +627,8 @@ impl FileSystem for OverlayFS {
     fn symlink(
         &self,
         parent: InodeID,
-        name: &OsStr,
-        to: &Path,
+        name: &str,
+        to: &str,
         uid: u32,
         gid: u32,
     ) -> FsResult<InodeID> {
@@ -637,27 +642,29 @@ impl FileSystem for OverlayFS {
         self.ensure_copy_up(parent)?;
         self.ensure_children_cached(parent)?;
 
-        let mut lock = rwlock_write!(self.icac);
+        let mut lock = self.icac.write();
         let ino = lock.0.get_mut(&parent).unwrap().clone();
 
         let InodePos(lidx, innd) = ino.ipos[0].clone();
         assert_eq!(lidx, RW_LAYER_IDX);
         let (new_innd, blk_out_file_exist) = {
-            let lock = rwlock_read!(self.layers[lidx]);
+            let lock = self.layers[lidx].read();
             (
                 lock.symlink(innd, name, to, uid, gid)?,
-                lock.lookup(innd, black_out_file_of(name).as_os_str())?.is_some()
+                lock.lookup(innd, black_out_file_of(name).as_str())?.is_some()
             )
         };
 
         let mut full_path = ino.full_path.clone();
         full_path.push((name.into(), FilePerm::from_bits(0o777).unwrap(), uid, gid));
+        let mut ipos = Vec::new();
+        ipos.push(InodePos(RW_LAYER_IDX, new_innd));
         let new_ino = Inode {
             tp: FileType::Lnk,
             rw_fiid: new_innd,
             rw_fidx: full_path.len() as isize - 1,
             full_path,
-            ipos: vec![InodePos(RW_LAYER_IDX, new_innd)],
+            ipos,
             black_out_ro: ino.black_out_ro | blk_out_file_exist,
             children: None,
         };
@@ -672,8 +679,8 @@ impl FileSystem for OverlayFS {
 
     fn rename(
         &self,
-        from: InodeID, name: &OsStr,
-        to: InodeID, newname: &OsStr
+        from: InodeID, name: &str,
+        to: InodeID, newname: &str
     ) -> FsResult<()> {
         if is_black_out_file(name) {
             return Err(new_error!(FsError::PermissionDenied));
@@ -683,7 +690,7 @@ impl FileSystem for OverlayFS {
         }
 
         let old_iid = if let Some(old_iid) = self.lookup(from, name)? {
-            let lock = rwlock_read!(self.icac);
+            let lock = self.icac.read();
             let old_ino = lock.0.get(&old_iid).unwrap();
             // refuse to move a dir with children in RO layers
             if old_ino.tp == FileType::Dir && self.dir_has_ro_layer(old_ino) {
@@ -701,16 +708,16 @@ impl FileSystem for OverlayFS {
 
         self.ensure_copy_up(old_iid)?;
 
-        let mut lock = rwlock_write!(self.icac);
+        let mut lock = self.icac.write();
         let from_ino = lock.0.get_mut(&from).unwrap();
         assert_eq!(from_ino.tp, FileType::Dir);
         let InodePos(from_lidx, from_innd) = from_ino.ipos[0].clone();
         assert_eq!(from_lidx, RW_LAYER_IDX);
-        let fs = rwlock_read!(self.layers[from_lidx]);
+        let fs = self.layers[from_lidx].read();
 
         // remove cached old child
         let from_children = from_ino.children.as_mut().unwrap();
-        let entry = from_children.remove(&PathBuf::from(name)).unwrap();
+        let entry = from_children.remove(&String::from(name)).unwrap();
 
         let (to_innd, to_ino) = if from == to {
             // from and to are same dir
@@ -727,7 +734,7 @@ impl FileSystem for OverlayFS {
         fs.rename(from_innd, name, to_innd, newname)?;
 
         // add new cached child
-        to_ino.children.as_mut().unwrap().insert(PathBuf::from(newname), entry);
+        to_ino.children.as_mut().unwrap().insert(String::from(newname), entry);
 
         // create black out file for oldname
         self.ensure_black_out_file(&fs, from_innd, name)?;
@@ -738,14 +745,14 @@ impl FileSystem for OverlayFS {
         Ok(())
     }
 
-    fn lookup(&self, iid: InodeID, name: &OsStr) -> FsResult<Option<InodeID>> {
+    fn lookup(&self, iid: InodeID, name: &str) -> FsResult<Option<InodeID>> {
         self.ensure_children_cached(iid)?;
 
-        let lock = rwlock_read!(self.icac);
+        let lock = self.icac.read();
         let ino = lock.0.get(&iid).unwrap();
 
         let ret = ino.children.as_ref().unwrap().iter().find(
-            |(pb, _)| pb.as_os_str() == name
+            |(pb, _)| pb.as_str() == name
         ).map(
             |(_, (_, iid))| *iid
         );
@@ -757,10 +764,10 @@ impl FileSystem for OverlayFS {
 
     fn listdir(
         &self, iid: InodeID, offset: usize, num: usize,
-    ) -> FsResult<Vec<(InodeID, PathBuf, FileType)>> {
+    ) -> FsResult<Vec<(InodeID, String, FileType)>> {
         self.ensure_children_cached(iid)?;
 
-        let lock = rwlock_read!(self.icac);
+        let lock = self.icac.read();
         let ino = lock.0.get(&iid).unwrap();
 
         let mut ret = Vec::new();
@@ -784,12 +791,12 @@ impl FileSystem for OverlayFS {
         len: usize,
     ) -> FsResult<()> {
         self.ensure_copy_up(iid)?;
-        let lock = rwlock_read!(self.icac);
+        let lock = self.icac.read();
         let ino = lock.0.get(&iid).unwrap();
         assert_eq!(ino.tp, FileType::Reg);
         let InodePos(lidx, innd) = ino.ipos[0];
         assert_eq!(lidx, RW_LAYER_IDX);
-        rwlock_read!(self.layers[lidx]).fallocate(innd, mode, offset, len)?;
+        self.layers[lidx].read().fallocate(innd, mode, offset, len)?;
         Ok(())
     }
 }

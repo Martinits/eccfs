@@ -7,11 +7,11 @@ macro_rules! into_inode_bytes {
         impl Into<InodeBytes> for $T {
             #[inline]
             fn into(self) -> InodeBytes {
-                assert_eq!(std::mem::size_of::<$T>(), INODE_SZ);
+                assert_eq!(core::mem::size_of::<$T>(), INODE_SZ);
                 unsafe {
-                    std::slice::from_raw_parts(
+                    core::slice::from_raw_parts(
                         &self as *const $T as *const u8,
-                        std::mem::size_of::<$T>(),
+                        core::mem::size_of::<$T>(),
                     ).try_into().unwrap()
                 }
             }

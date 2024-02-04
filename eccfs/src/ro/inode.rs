@@ -1,13 +1,12 @@
 use crate::*;
 use crate::vfs::*;
 use super::disk::*;
-use std::time::{SystemTime, Duration};
-use std::mem::size_of;
+use core::mem::size_of;
 use crate::htree::*;
 use crate::bcache::*;
-use std::ffi::OsStr;
 use crate::crypto::half_md4;
 use super::*;
+use alloc::string::{String, ToString};
 
 pub enum DirEntryInfo<'a> {
     Inline(&'a [DirEntry]),
@@ -22,7 +21,7 @@ pub enum LookUpInfo<'a> {
 
 #[derive(Clone)]
 pub enum LnkName {
-    Short(PathBuf),
+    Short(String),
     Long(u64, usize), // (pos, length)
 }
 
@@ -52,9 +51,9 @@ pub struct Inode {
     nlinks: u16,
     uid: u32,
     gid: u32,
-    atime: SystemTime,
-    ctime: SystemTime,
-    mtime: SystemTime,
+    atime: u32,
+    ctime: u32,
+    mtime: u32,
     size: usize, // with . and ..
     ext: InodeExt,
 }
@@ -85,7 +84,7 @@ impl Inode {
                     let inode_ext_sz = (sz as usize).next_multiple_of(INODE_ALIGN);
                     assert_eq!(data_start + inode_ext_sz, raw.len());
                     let data = Vec::from(unsafe {
-                        std::slice::from_raw_parts(
+                        core::slice::from_raw_parts(
                             raw[data_start..].as_ptr() as *const u8,
                             sz as usize,
                         )
@@ -116,9 +115,9 @@ impl Inode {
                     nlinks: dinode_base.nlinks,
                     uid: dinode_base.uid,
                     gid: dinode_base.gid,
-                    atime: SystemTime::UNIX_EPOCH + Duration::from_secs(dinode_base.atime as u64),
-                    ctime: SystemTime::UNIX_EPOCH + Duration::from_secs(dinode_base.ctime as u64),
-                    mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(dinode_base.mtime as u64),
+                    atime: dinode_base.atime,
+                    ctime: dinode_base.ctime,
+                    mtime: dinode_base.mtime,
                     size: dinode_base.size as usize,
                     ext,
                 })
@@ -136,7 +135,7 @@ impl Inode {
                     let nr_de_dot = nr_de + 2;
                     assert!(de_start + nr_de_dot as usize * size_of::<DirEntry>() == raw.len());
                     let de_list = Vec::from(unsafe {
-                        std::slice::from_raw_parts(
+                        core::slice::from_raw_parts(
                             raw[de_start..].as_ptr() as *const DirEntry,
                             nr_de_dot as usize,
                         )
@@ -154,13 +153,13 @@ impl Inode {
                         let idx_start = size_of::<DInodeDirBaseNoInline>();
                         assert!(idx_start + nr_idx * size_of::<EntryIndex>() == raw.len());
                         Vec::from(unsafe {
-                            std::slice::from_raw_parts(
+                            core::slice::from_raw_parts(
                                 raw[idx_start..].as_ptr() as *const EntryIndex,
                                 nr_idx,
                             )
                         })
                     } else {
-                        vec![]
+                        Vec::new()
                     };
                     let (pos, off) = pos64_split(di_dir_base.de_list_start);
                     assert_eq!(off as usize % INODE_ALIGN, 0);
@@ -177,9 +176,9 @@ impl Inode {
                     nlinks: dinode_base.nlinks,
                     uid: dinode_base.uid,
                     gid: dinode_base.gid,
-                    atime: SystemTime::UNIX_EPOCH + Duration::from_secs(dinode_base.atime as u64),
-                    ctime: SystemTime::UNIX_EPOCH + Duration::from_secs(dinode_base.ctime as u64),
-                    mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(dinode_base.mtime as u64),
+                    atime: dinode_base.atime,
+                    ctime: dinode_base.ctime,
+                    mtime: dinode_base.mtime,
                     size: dinode_base.size as usize + 2,
                     ext,
                 })
@@ -197,9 +196,9 @@ impl Inode {
                     nlinks: ibase.nlinks,
                     uid: ibase.uid,
                     gid: ibase.gid,
-                    atime: SystemTime::UNIX_EPOCH + Duration::from_secs(ibase.atime as u64),
-                    ctime: SystemTime::UNIX_EPOCH + Duration::from_secs(ibase.ctime as u64),
-                    mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(ibase.mtime as u64),
+                    atime: ibase.atime,
+                    ctime: ibase.ctime,
+                    mtime: ibase.mtime,
                     size: ibase.size as usize,
                     ext: InodeExt::Lnk(
                         if ibase.size > 32 {
@@ -209,11 +208,9 @@ impl Inode {
                             )
                         } else {
                             LnkName::Short(
-                                std::str::from_utf8(
+                                core::str::from_utf8(
                                     dinode.name.split_at(ibase.size as usize).0
-                                ).map_err(
-                                    |_| new_error!(FsError::InvalidData)
-                                )?.into()
+                                ).unwrap().to_string()
                             )
                         }
                     )
@@ -311,7 +308,7 @@ impl Inode {
     }
 
     // return de_list_start(pos64), group_start(num of entry), group length
-    pub fn lookup_index<'a>(&'a self, name: &OsStr) -> FsResult<LookUpInfo<'a>> {
+    pub fn lookup_index<'a>(&'a self, name: &str) -> FsResult<LookUpInfo<'a>> {
         match &self.ext {
             InodeExt::Dir{ref idx_list, de_list_start} => {
                 if idx_list.len() == 0 {
@@ -322,7 +319,7 @@ impl Inode {
                         self.size
                     ));
                 }
-                let hash = half_md4(name.to_str().unwrap().as_bytes())?;
+                let hash = half_md4(name.as_bytes())?;
                 if let Some(EntryIndex {
                     position, group_len, ..
                 }) = idx_list.iter().rev().find(

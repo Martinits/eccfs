@@ -1,4 +1,8 @@
-use std::sync::{Arc, Mutex};
+use alloc::{
+    sync::Arc,
+    vec::Vec,
+};
+use spin::Mutex;
 use crate::bcache::*;
 use crate::*;
 use super::*;
@@ -40,7 +44,7 @@ impl ROHashTree {
             return Err(new_error!(FsError::UnexpectedEof))
         }
 
-        let mut backend = mutex_lock!(self.backend);
+        let mut backend = self.backend.lock();
 
         let data_phy = mht::logi2phy(pos);
         if self.cache_data {
@@ -120,6 +124,6 @@ impl ROHashTree {
 
     // flush all blocks including root
     // pub fn flush(&self) -> FsResult<()> {
-    //     mutex_lock!(self.backend).flush()
+    //     self.backend.lock().flush()
     // }
 }

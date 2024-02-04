@@ -1,8 +1,7 @@
 use crate::*;
-pub use std::ffi::OsStr;
-use std::time::SystemTime;
-pub use std::path::{PathBuf, Path};
 use bitflags::bitflags;
+use alloc::vec::Vec;
+use alloc::string::String;
 
 /// for ROFS, 16bit block offset + 48bit block position
 pub type InodeID = u64;
@@ -71,11 +70,11 @@ pub trait FileSystem: Sync + Send {
     }
 
     /// read symlink only if inode is a SymLink
-    fn iread_link(&self, _iid: InodeID) -> FsResult<PathBuf> {
+    fn iread_link(&self, _iid: InodeID) -> FsResult<String> {
         Err(FsError::NotSupported)
     }
 
-    fn iset_link(&self, _iid: InodeID, _new_lnk: &OsStr) -> FsResult<()> {
+    fn iset_link(&self, _iid: InodeID, _new_lnk: &str) -> FsResult<()> {
         Err(FsError::NotSupported)
     }
 
@@ -93,7 +92,7 @@ pub trait FileSystem: Sync + Send {
     fn create(
         &self,
         _parent: InodeID,
-        _name: &OsStr,
+        _name: &str,
         _ftype: FileType,
         _uid: u32,
         _gid: u32,
@@ -103,12 +102,12 @@ pub trait FileSystem: Sync + Send {
     }
 
     /// create hard link
-    fn link(&self, _parent: InodeID, _name: &OsStr, _linkto: InodeID) -> FsResult<()> {
+    fn link(&self, _parent: InodeID, _name: &str, _linkto: InodeID) -> FsResult<()> {
         Err(FsError::NotSupported)
     }
 
     /// remove a link to inode
-    fn unlink(&self, _parent: InodeID, _name: &OsStr) -> FsResult<()> {
+    fn unlink(&self, _parent: InodeID, _name: &str) -> FsResult<()> {
         Err(FsError::NotSupported)
     }
 
@@ -116,8 +115,8 @@ pub trait FileSystem: Sync + Send {
     fn symlink(
         &self,
         _parent: InodeID,
-        _name: &OsStr,
-        _to: &Path,
+        _name: &str,
+        _to: &str,
         _uid: u32,
         _gid: u32,
     ) -> FsResult<InodeID> {
@@ -127,14 +126,14 @@ pub trait FileSystem: Sync + Send {
     /// move `inode/name` to `to/newname`
     fn rename(
         &self,
-        _from: InodeID, _name: &OsStr,
-        _to: InodeID, _newname: &OsStr
+        _from: InodeID, _name: &str,
+        _to: InodeID, _newname: &str
     ) -> FsResult<()> {
         Err(FsError::NotSupported)
     }
 
     /// lookup name in inode only if inode is a dir
-    fn lookup(&self, _iid: InodeID, _name: &OsStr) -> FsResult<Option<InodeID>> {
+    fn lookup(&self, _iid: InodeID, _name: &str) -> FsResult<Option<InodeID>> {
         Err(FsError::NotSupported)
     }
 
@@ -144,7 +143,7 @@ pub trait FileSystem: Sync + Send {
         _iid: InodeID,
         _offset: usize,
         _num: usize, // 0 means as many as possible
-    ) -> FsResult<Vec<(InodeID, PathBuf, FileType)>> {
+    ) -> FsResult<Vec<(InodeID, String, FileType)>> {
         Err(FsError::NotSupported)
     }
 
@@ -152,7 +151,7 @@ pub trait FileSystem: Sync + Send {
         &self,
         iid: InodeID,
         offset: usize,
-    ) -> FsResult<Option<(InodeID, PathBuf, FileType)>> {
+    ) -> FsResult<Option<(InodeID, String, FileType)>> {
         let l = self.listdir(iid, offset, 1)?;
         if l.len() == 0 {
             Ok(None)
@@ -264,11 +263,11 @@ pub struct Metadata {
     /// Size in blocks
     pub blocks: u64,
     /// Time of last access
-    pub atime: SystemTime,
+    pub atime: u32,
     /// Time of last modification
-    pub mtime: SystemTime,
+    pub mtime: u32,
     /// Time of last change
-    pub ctime: SystemTime,
+    pub ctime: u32,
     /// Type of file
     pub ftype: FileType,
     /// Permission
@@ -281,6 +280,7 @@ pub struct Metadata {
     pub gid: u32,
 }
 
+#[cfg(feature = "fuse")]
 impl Into<fuser::FileAttr> for Metadata {
     fn into(self) -> fuser::FileAttr {
         fuser::FileAttr {
@@ -307,13 +307,17 @@ impl Into<fuser::FileAttr> for Metadata {
 #[derive(Clone)]
 pub enum SetMetadata {
     Size(usize),
-    Atime(SystemTime),
-    Ctime(SystemTime),
-    Mtime(SystemTime),
+    Atime(u32),
+    Ctime(u32),
+    Mtime(u32),
     Type(FileType),
     Permission(FilePerm),
     Uid(u32),
     Gid(u32),
+}
+
+pub trait TimeSource: Send + Sync {
+    fn now(&self) -> u32;
 }
 
 #[derive(Debug)]

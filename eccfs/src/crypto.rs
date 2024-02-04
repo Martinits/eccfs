@@ -122,7 +122,8 @@ mod key_gen {
     use super::Key128;
     use crate::*;
     use rand_core::RngCore;
-    use std::mem::size_of;
+    use core::mem::size_of;
+    use crate::alloc::borrow::ToOwned;
 
     #[repr(C)]
     struct KdfInput {
@@ -193,6 +194,7 @@ pub fn half_md4(buf: &[u8]) -> FsResult<u64> {
     Ok(u64::from_le_bytes(hash[4..12].try_into().unwrap()))
 }
 
+#[cfg(feature = "std_file")]
 mod tests {
     #[test]
     fn sha3_256() {

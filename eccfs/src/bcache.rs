@@ -1,8 +1,13 @@
-use std::sync::Arc;
+use alloc::{
+    boxed::Box,
+    sync::Arc,
+    vec::Vec,
+};
+
 use crate::storage::ROStorage;
 use crate::*;
 use crate::lru::Lru;
-use std::sync::RwLock;
+use spin::RwLock;
 use crate::crypto::*;
 
 #[cfg(feature = "ro_cache_server")]
@@ -288,7 +293,7 @@ impl RWCache {
         let apay = Arc::new(RwLock::new(blk));
         self.lru.insert_and_get(pos, &apay).map(
             |wb| (apay, wb.map(
-                |(k, v)| (k, v.into_inner().unwrap())
+                |(k, v)| (k, v.into_inner())
             ))
         )
     }
@@ -302,7 +307,7 @@ impl RWCache {
         self.lru.flush_wb().map(
             |l| {
                 l.into_iter().map(
-                    |(k, v)| (k, v.into_inner().unwrap())
+                    |(k, v)| (k, v.into_inner())
                 ).collect()
             }
         )
@@ -310,7 +315,7 @@ impl RWCache {
 
     pub fn flush_key(&mut self, pos: u64) -> FsResult<Option<Block>> {
         Ok(self.lru.try_pop_key(&pos, false)?.map(
-            |payload| payload.into_inner().unwrap()
+            |payload| payload.into_inner()
         ))
     }
 

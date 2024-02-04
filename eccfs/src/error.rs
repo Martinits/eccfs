@@ -1,10 +1,9 @@
-use thiserror::Error;
-use std::io::ErrorKind;
+use thiserror_no_std::Error;
 
 #[derive(Debug, Error)]
 pub enum FsError {
     #[error("std::io error")]
-    IOError(#[from] std::io::Error),
+    IOError,
     #[error("directory is not empty")]
     DirectoryNotEmpty,
     #[error("data encoding is invalid")]
@@ -55,30 +54,31 @@ use libc::c_int;
 impl Into<c_int> for FsError {
     fn into(self) -> c_int {
         match self {
-            FsError::IOError(io_err) => {
-                match io_err.kind() {
-                    ErrorKind::NotFound => libc::ENOENT,
-                    ErrorKind::PermissionDenied => libc::EACCES,
-                    ErrorKind::ConnectionRefused => libc::ECONNREFUSED,
-                    ErrorKind::ConnectionReset => libc::ECONNRESET,
-                    ErrorKind::ConnectionAborted => libc::ECONNABORTED,
-                    ErrorKind::NotConnected => libc::ENOTCONN,
-                    ErrorKind::AddrInUse => libc::EADDRINUSE,
-                    ErrorKind::AddrNotAvailable => libc::EADDRNOTAVAIL,
-                    ErrorKind::BrokenPipe => libc::EPIPE,
-                    ErrorKind::AlreadyExists => libc::EEXIST,
-                    ErrorKind::WouldBlock => libc::EWOULDBLOCK,
-                    ErrorKind::InvalidInput => libc::EINVAL,
-                    ErrorKind::InvalidData => libc::EINVAL,
-                    ErrorKind::TimedOut => libc::ETIMEDOUT,
-                    ErrorKind::WriteZero => 256 as c_int,
-                    ErrorKind::Interrupted => 257 as c_int,
-                    ErrorKind::Unsupported => libc::ENOSYS,
-                    ErrorKind::UnexpectedEof => 258 as c_int,
-                    ErrorKind::OutOfMemory => 259 as c_int,
-                    _ => 511 as c_int,
-                }
-            },
+            FsError::IOError => libc::EIO,
+            // FsError::IOError(io_err) => {
+            //     match io_err.kind() {
+            //         ErrorKind::NotFound => libc::ENOENT,
+            //         ErrorKind::PermissionDenied => libc::EACCES,
+            //         ErrorKind::ConnectionRefused => libc::ECONNREFUSED,
+            //         ErrorKind::ConnectionReset => libc::ECONNRESET,
+            //         ErrorKind::ConnectionAborted => libc::ECONNABORTED,
+            //         ErrorKind::NotConnected => libc::ENOTCONN,
+            //         ErrorKind::AddrInUse => libc::EADDRINUSE,
+            //         ErrorKind::AddrNotAvailable => libc::EADDRNOTAVAIL,
+            //         ErrorKind::BrokenPipe => libc::EPIPE,
+            //         ErrorKind::AlreadyExists => libc::EEXIST,
+            //         ErrorKind::WouldBlock => libc::EWOULDBLOCK,
+            //         ErrorKind::InvalidInput => libc::EINVAL,
+            //         ErrorKind::InvalidData => libc::EINVAL,
+            //         ErrorKind::TimedOut => libc::ETIMEDOUT,
+            //         ErrorKind::WriteZero => 256 as c_int,
+            //         ErrorKind::Interrupted => 257 as c_int,
+            //         ErrorKind::Unsupported => libc::ENOSYS,
+            //         ErrorKind::UnexpectedEof => 258 as c_int,
+            //         ErrorKind::OutOfMemory => 259 as c_int,
+            //         _ => 511 as c_int,
+            //     }
+            // },
             FsError::DirectoryNotEmpty => libc::ENOTEMPTY,
             FsError::InvalidData => libc::EINVAL,
             FsError::InvalidParameter => libc::EINVAL,

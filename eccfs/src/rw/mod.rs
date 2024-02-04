@@ -1,25 +1,24 @@
 pub mod superblock;
 pub mod inode;
 pub mod disk;
-pub mod builder;
 pub mod bitmap;
 
+extern crate alloc;
 use crate::vfs::*;
 use crate::vfs::SetMetadata::*;
-use std::sync::{Arc, RwLock, Mutex};
-use std::path::{Path, PathBuf};
+use alloc::sync::Arc;
+use spin::{RwLock, Mutex};
 use crate::*;
-use std::ffi::OsStr;
 use superblock::*;
 use crate::htree::*;
 use inode::*;
 use crate::storage::*;
 use crate::lru::*;
 use disk::*;
-use std::mem::size_of;
+use core::mem::size_of;
 use bitmap::*;
-use std::fs;
-use std::time::SystemTime;
+use alloc::vec::Vec;
+use alloc::string::{String, ToString};
 
 
 pub const RWFS_MAGIC: u64 = 0x0045434352574653; // ECCRWFS
@@ -32,7 +31,6 @@ pub const DATA_FILE_NAME_LEN: usize = size_of::<Hash256>() * 2;
 
 pub struct RWFS {
     regen_root_key: bool,
-    path: PathBuf,
     mode: FSMode,
     sb: RwLock<SuperBlock>,
     ibitmap: Mutex<BitMap>,
@@ -41,6 +39,9 @@ pub struct RWFS {
     de_cac: Option<Mutex<Lru<String, InodeID>>>,
     key_gen: KeyGen,
     sb_meta_for_inode: Arc<RwLock<(usize, usize)>>,
+    device: Arc<dyn Device>,
+    sb_storage: Arc<dyn RWStorage>,
+    time_source: &'static dyn TimeSource,
 }
 
 #[cfg(feature = "channel_lru")]
@@ -56,30 +57,27 @@ impl Drop for RWFS {
 impl RWFS {
     pub fn new(
         regen_root_key: bool,
-        path: &Path, // must be a dir
         mode: FSMode,
         icache_cap_hint: Option<usize>,
         cache_de: usize,
+        device: Arc<dyn Device>,
+        time_source: &'static dyn TimeSource,
     ) -> FsResult<Self> {
-        assert!(io_try!(fs::metadata(path)).is_dir());
-        let mut pb = path.to_path_buf();
-        pb.push(SB_FILE_NAME);
 
-        let mut sb_file = FileStorage::new(&pb, true)?;
-        pb.pop();
+        let sb_storage = device.open_rw_storage(SB_FILE_NAME)?;
 
         // read superblock
-        let mut sb_blk = sb_file.read_blk(SUPERBLOCK_POS)?;
+        let mut sb_blk = sb_storage.read_blk(SUPERBLOCK_POS)?;
         // check crypto
         crypto_in(&mut sb_blk, CryptoHint::from_fsmode(mode.clone(), SUPERBLOCK_POS))?;
         let sb = SuperBlock::new(sb_blk)?;
 
         // check sb file len
-        if sb_file.get_len()? != blk2byte!(sb.ibitmap_len + 1) {
+        if sb_storage.get_len()? != blk2byte!(sb.ibitmap_len + 1) {
             return Err(new_error!(FsError::SuperBlockCheckFailed));
         }
         // check nr_data_file
-        if io_try!(fs::read_dir(path)).count() != sb.nr_data_file {
+        if device.nr_storage()? != sb.nr_data_file {
             return Err(new_error!(FsError::SuperBlockCheckFailed));
         }
 
@@ -88,10 +86,11 @@ impl RWFS {
             // no possibilty that ibitmap is empty
             return Err(new_error!(FsError::SuperBlockCheckFailed));
         }
-        let mut ibitmap_blks = vec![[0u8; BLK_SZ]; sb.ibitmap_len as usize];
+        let mut ibitmap_blks = Vec::new();
+        ibitmap_blks.resize(sb.ibitmap_len as usize, [0u8; BLK_SZ]);
         for (i, (blk, ke)) in ibitmap_blks.iter_mut().zip(sb.ibitmap_ke.iter()).enumerate() {
             let pos = i as u64 + sb.ibitmap_start;
-            sb_file.read_blk_to(pos, blk)?;
+            sb_storage.read_blk_to(pos, blk)?;
             crypto_in(
                 blk,
                 CryptoHint::from_key_entry(
@@ -107,16 +106,14 @@ impl RWFS {
             return Err(new_error!(FsError::SuperBlockCheckFailed));
         }
         let itbl_file_name = hex::encode_upper(&sb.itbl_name);
-        assert_eq!(itbl_file_name.len(), 2 * size_of::<Hash256>());
-        pb.push(itbl_file_name);
-        let mut itbl_storage = FileStorage::new(Path::new(&pb), true)?;
-        pb.pop();
+        assert_eq!(itbl_file_name.len(), DATA_FILE_NAME_LEN);
+        let itbl_storage = device.open_rw_storage(&itbl_file_name)?;
         if itbl_storage.get_len()? != blk2byte!(sb.itbl_len) {
             return Err(new_error!(FsError::SuperBlockCheckFailed));
         }
         let inode_tbl = RWHashTree::new(
             Some(RW_CACHE_CAP_DEFAULT_ITBL),
-            Box::new(itbl_storage),
+            itbl_storage,
             mht::get_logi_nr_blk(sb.itbl_len as u64),
             Some(FSMode::from_key_entry(sb.itbl_ke, mode.is_encrypted())),
             mode.is_encrypted(),
@@ -126,7 +123,6 @@ impl RWFS {
 
         Ok(RWFS {
             regen_root_key,
-            path: path.to_path_buf(),
             mode,
             sb: RwLock::new(sb),
             ibitmap: Mutex::new(ibitmap),
@@ -141,14 +137,17 @@ impl RWFS {
             },
             key_gen: KeyGen::new(),
             sb_meta_for_inode,
+            device,
+            sb_storage,
+            time_source,
         })
     }
 
     fn fetch_inode(&self, iid: InodeID) -> FsResult<Inode> {
         let ib = self.read_itbl(iid)?;
         Inode::new_from_raw(
-            &ib, iid, &self.path, self.mode.is_encrypted(),
-            self.sb_meta_for_inode.clone(),
+            &ib, iid, self.mode.is_encrypted(),
+            self.sb_meta_for_inode.clone(), self.device.clone(),
         )
     }
 
@@ -158,7 +157,7 @@ impl RWFS {
     }
 
     fn write_itbl(&self, iid: InodeID, ib: &InodeBytes) -> FsResult<()> {
-        mutex_lock!(self.inode_tbl).write_exact(
+        self.inode_tbl.lock().write_exact(
             iid_to_htree_logi_pos(iid), ib
         )?;
         Ok(())
@@ -166,7 +165,7 @@ impl RWFS {
 
     fn read_itbl(&self, iid: InodeID) -> FsResult<InodeBytes> {
         let mut ib = [0u8; INODE_SZ];
-        let read = mutex_lock!(self.inode_tbl).read_exact(
+        let read = self.inode_tbl.lock().read_exact(
             iid_to_htree_logi_pos(iid), &mut ib
         )?;
         assert_eq!(read, INODE_SZ);
@@ -174,7 +173,7 @@ impl RWFS {
     }
 
     fn get_inode(&self, iid: InodeID, dirty: bool) -> FsResult<Arc<RwLock<Inode>>> {
-        let mut icac = mutex_lock!(&self.icac);
+        let mut icac = self.icac.lock();
         let ainode = if let Some(ainode) = icac.get(&iid)? {
             ainode
         } else {
@@ -182,7 +181,7 @@ impl RWFS {
             let ainode = Arc::new(RwLock::new(self.fetch_inode(iid)?));
             if let Some((iid, rw_inode)) = icac.insert_and_get(iid, &ainode)? {
                 // write back inode
-                let inode = rw_inode.into_inner().unwrap();
+                let inode = rw_inode.into_inner();
                 self.write_back_inode(iid, inode)?;
             }
             ainode
@@ -194,7 +193,7 @@ impl RWFS {
     }
 
     fn get_inode_try(&self, iid: InodeID, dirty: bool) -> FsResult<Option<Arc<RwLock<Inode>>>> {
-        let mut icac = mutex_lock!(&self.icac);
+        let mut icac = self.icac.lock();
         if let Some(ainode) = icac.get(&iid)? {
             if dirty {
                 icac.mark_dirty(&iid)?;
@@ -206,11 +205,11 @@ impl RWFS {
     }
 
     fn insert_inode(&self, iid: InodeID, inode: Inode) -> FsResult<()> {
-        let mut icac = mutex_lock!(&self.icac);
+        let mut icac = self.icac.lock();
         let ainode = Arc::new(RwLock::new(inode));
         if let Some((iid, rw_inode)) = icac.insert_and_get(iid, &ainode)? {
             // write back inode
-            let inode = rw_inode.into_inner().unwrap();
+            let inode = rw_inode.into_inner();
             self.write_back_inode(iid, inode)?;
         }
         icac.mark_dirty(&iid)?;
@@ -221,12 +220,12 @@ impl RWFS {
         // load inode, ensure its in cache
         let _ = self.get_inode(iid, false)?;
 
-        let mut icac = mutex_lock!(&self.icac);
+        let mut icac = self.icac.lock();
         let lock_inode = icac.try_pop_key(&iid, true)?.unwrap();
-        let ino = lock_inode.into_inner().unwrap();
+        let ino = lock_inode.into_inner();
 
         if ino.tp == FileType::Reg {
-            rwlock_write!(self.sb).files -= 1;
+            self.sb.write().files -= 1;
         }
 
         // remove data file
@@ -240,9 +239,9 @@ impl RWFS {
 }
 
 macro_rules! update_times {
-    ($lock: expr, $($x:expr),* ) => {
+    ($self:ident, $lock: expr, $($x:expr),* ) => {
         {
-            let now = SystemTime::now();
+            let now = $self.time_source.now();
             $(
                 $lock.set_meta($x(now))?;
             )*
@@ -255,16 +254,12 @@ impl FileSystem for RWFS {
         // sync data and meta
         self.fsync()?;
 
-        let mut pb = self.path.clone();
-        pb.push(SB_FILE_NAME);
-        let mut sb_file = FileStorage::new(&pb, true)?;
-
         // write bitmap
-        let mut ibitmap_blks = mutex_lock!(self.ibitmap).write()?;
+        let mut ibitmap_blks = self.ibitmap.lock().write()?;
         let mut ibitmap_ke = Vec::with_capacity(ibitmap_blks.len());
-        sb_file.set_len(1 + ibitmap_blks.len() as u64)?;
+        self.sb_storage.set_len(1 + ibitmap_blks.len() as u64)?;
         for (i, blk) in ibitmap_blks.iter_mut().enumerate() {
-            let pos = i as u64 + rwlock_read!(self.sb).ibitmap_start;
+            let pos = i as u64 + self.sb.read().ibitmap_start;
             let ke = crypto_out(blk,
                 if self.mode.is_encrypted() {
                     Some(self.key_gen.gen_key(pos)?)
@@ -274,10 +269,10 @@ impl FileSystem for RWFS {
                 pos
             )?.into_key_entry();
             ibitmap_ke.push(ke);
-            sb_file.write_blk(pos, blk)?;
+            self.sb_storage.write_blk(pos, blk)?;
         }
         {
-            let mut lock = rwlock_write!(self.sb);
+            let mut lock = self.sb.write();
             let new_ib_len = ibitmap_blks.len();
             nf_nb_change(
                 &self.sb_meta_for_inode,
@@ -290,12 +285,12 @@ impl FileSystem for RWFS {
 
         // write sb_meta_for_inode back to superblock
         {
-            let mut lock = rwlock_write!(self.sb);
-            lock.nr_data_file = rwlock_read!(self.sb_meta_for_inode).0;
-            lock.blocks = rwlock_read!(self.sb_meta_for_inode).1;
+            let mut lock = self.sb.write();
+            lock.nr_data_file = self.sb_meta_for_inode.read().0;
+            lock.blocks = self.sb_meta_for_inode.read().1;
         }
         // write superblock
-        let mut sb_blk = rwlock_read!(self.sb).write()?;
+        let mut sb_blk = self.sb.read().write()?;
         let mode = crypto_out(&mut sb_blk,
             if self.mode.is_encrypted() {
                 let key = if self.regen_root_key {
@@ -309,31 +304,31 @@ impl FileSystem for RWFS {
             },
             SUPERBLOCK_POS
         )?;
-        sb_file.write_blk(SUPERBLOCK_POS, &sb_blk)?;
+        self.sb_storage.write_blk(SUPERBLOCK_POS, &sb_blk)?;
 
         Ok(mode)
     }
 
     fn finfo(&self) -> FsResult<FsInfo> {
-        rwlock_read!(self.sb).get_fsinfo()
+        self.sb.read().get_fsinfo()
     }
 
     fn fsync(&mut self) -> FsResult<()> {
-        for (iid, i) in mutex_lock!(&self.icac).flush_wb()? {
-            let inode = i.into_inner().unwrap();
+        for (iid, i) in self.icac.lock().flush_wb()? {
+            let inode = i.into_inner();
             self.write_back_inode(iid, inode)?;
         }
 
         if let Some(ref de_cac) = self.de_cac {
-            mutex_lock!(de_cac).flush_wb()?;
+            de_cac.lock().flush_wb()?;
             // no write back, because de cache is not a write buffer
         }
 
         // flush itbl and store new ke into superblock
-        let itbl_mode = mutex_lock!(self.inode_tbl).flush()?;
-        let mut lock = rwlock_write!(self.sb);
+        let itbl_mode = self.inode_tbl.lock().flush()?;
+        let mut lock = self.sb.write();
         lock.itbl_ke = itbl_mode.into_key_entry();
-        let new_itbl_len = mht::get_phy_nr_blk(mutex_lock!(self.inode_tbl).logi_len) as usize;
+        let new_itbl_len = mht::get_phy_nr_blk(self.inode_tbl.lock().logi_len) as usize;
         nf_nb_change(
             &self.sb_meta_for_inode,
             0,
@@ -346,67 +341,67 @@ impl FileSystem for RWFS {
 
     fn iread(&self, iid: InodeID, offset: usize, to: &mut [u8]) -> FsResult<usize> {
         let alock = self.get_inode(iid, true)?;
-        let mut lock = rwlock_write!(alock);
+        let mut lock = alock.write();
         let read = lock.read_data(offset, to)?;
-        update_times!(lock, Atime);
+        update_times!(self, lock, Atime);
         Ok(read)
     }
 
     fn iwrite(&self, iid: InodeID, offset: usize, from: &[u8]) -> FsResult<usize> {
         let alock = self.get_inode(iid, true)?;
-        let mut lock = rwlock_write!(alock);
+        let mut lock = alock.write();
         let written = lock.write_data(offset, from)?;
-        update_times!(lock, Atime, Ctime, Mtime);
+        update_times!(self, lock, Atime, Ctime, Mtime);
         Ok(written)
     }
 
     fn get_meta(&self, iid: InodeID) -> FsResult<Metadata> {
         let alock = self.get_inode(iid, true)?;
-        let mut lock = rwlock_write!(alock);
+        let mut lock = alock.write();
         let meta = lock.get_meta()?;
-        update_times!(lock, Atime);
+        update_times!(self, lock, Atime);
         Ok(meta)
     }
 
     fn set_meta(&self, iid: InodeID, set_meta: SetMetadata) -> FsResult<()> {
         let alock = self.get_inode(iid, true)?;
-        let mut lock = rwlock_write!(alock);
+        let mut lock = alock.write();
         lock.set_meta(set_meta.clone())?;
         match set_meta {
             Atime(_) | Ctime(_) | Mtime(_) => {},
-            _ => update_times!(lock, Atime, Ctime),
+            _ => update_times!(self, lock, Atime, Ctime),
         }
         Ok(())
     }
 
-    fn iread_link(&self, iid: InodeID) -> FsResult<PathBuf> {
+    fn iread_link(&self, iid: InodeID) -> FsResult<String> {
         let alock = self.get_inode(iid, true)?;
-        let mut lock = rwlock_write!(alock);
+        let mut lock = alock.write();
         let pb = lock.get_link()?;
-        update_times!(lock, Atime);
+        update_times!(self, lock, Atime);
         Ok(pb)
     }
 
-    fn iset_link(&self, iid: InodeID, new_lnk: &OsStr) -> FsResult<()> {
+    fn iset_link(&self, iid: InodeID, new_lnk: &str) -> FsResult<()> {
         let alock = self.get_inode(iid, true)?;
-        let mut lock = rwlock_write!(alock);
-        lock.set_link(Path::new(new_lnk))?;
-        update_times!(lock, Atime, Ctime, Mtime);
+        let mut lock = alock.write();
+        lock.set_link(new_lnk)?;
+        update_times!(self, lock, Atime, Ctime, Mtime);
         Ok(())
     }
 
     fn isync_meta(&self, iid: InodeID) -> FsResult<()> {
         if let Some(lock) = self.get_inode_try(iid, true)? {
-            let ib = rwlock_write!(lock).sync_meta()?;
+            let ib = lock.write().sync_meta()?;
             self.write_itbl(iid, &ib)?;
-            mutex_lock!(&self.icac).unmark_dirty(&iid)?;
+            self.icac.lock().unmark_dirty(&iid)?;
         }
         Ok(())
     }
 
     fn isync_data(&self, iid: InodeID) -> FsResult<()> {
         if let Some(lock) = self.get_inode_try(iid, true)? {
-            rwlock_write!(lock).sync_data()?;
+            lock.write().sync_data()?;
         }
         Ok(())
     }
@@ -414,35 +409,37 @@ impl FileSystem for RWFS {
     fn create(
         &self,
         parent: InodeID,
-        name: &OsStr,
+        name: &str,
         ftype: FileType,
         uid: u32,
         gid: u32,
         perm: FilePerm,
     ) -> FsResult<InodeID> {
-        let iid = mutex_lock!(self.ibitmap).alloc()?;
+        let iid = self.ibitmap.lock().alloc()?;
         let inode = Inode::new(
             iid, parent, ftype, uid, gid, perm,
-            &self.path, self.mode.is_encrypted(), self.sb_meta_for_inode.clone(),
+            self.mode.is_encrypted(),
+            self.sb_meta_for_inode.clone(), self.device.clone(),
+            self.time_source.now(),
         )?;
 
         let alock = self.get_inode(parent, true)?;
-        let mut lock = rwlock_write!(alock);
+        let mut lock = alock.write();
         lock.add_child(name, ftype, iid)?;
-        update_times!(lock, Atime, Ctime, Mtime);
+        update_times!(self, lock, Atime, Ctime, Mtime);
 
         self.insert_inode(iid, inode)?;
 
         if ftype == FileType::Reg {
-            rwlock_write!(self.sb).files += 1;
+            self.sb.write().files += 1;
         }
 
         Ok(iid)
     }
 
-    fn link(&self, parent: InodeID, name: &OsStr, linkto: InodeID) -> FsResult<()> {
+    fn link(&self, parent: InodeID, name: &str, linkto: InodeID) -> FsResult<()> {
         let to = self.get_inode(linkto, true)?;
-        let mut lock = rwlock_write!(to);
+        let mut lock = to.write();
 
         // hard links not allowed for directories
         if lock.tp == FileType::Dir {
@@ -450,30 +447,30 @@ impl FileSystem for RWFS {
         }
 
         lock.nlinks += 1;
-        update_times!(lock, Atime, Ctime);
+        update_times!(self, lock, Atime, Ctime);
         let tp = lock.tp;
 
         let alock = self.get_inode(parent, true)?;
-        let mut lock = rwlock_write!(alock);
+        let mut lock = alock.write();
         lock.add_child(name, tp, linkto)?;
 
         Ok(())
     }
 
-    fn unlink(&self, parent: InodeID, name: &OsStr) -> FsResult<()> {
+    fn unlink(&self, parent: InodeID, name: &str) -> FsResult<()> {
         let alock = self.get_inode(parent, true)?;
-        let mut lock = rwlock_write!(alock);
+        let mut lock = alock.write();
         let (iid, _) = lock.remove_child(name)?;
-        update_times!(lock, Atime, Ctime, Mtime);
+        update_times!(self, lock, Atime, Ctime, Mtime);
 
         let do_remove = {
             let inode = self.get_inode(iid, true)?;
-            let mut lock = rwlock_write!(inode);
+            let mut lock = inode.write();
             if lock.nlinks == 1 {
                 true
             } else {
                 lock.nlinks -= 1;
-                update_times!(lock, Atime, Ctime);
+                update_times!(self, lock, Atime, Ctime);
                 false
             }
         };
@@ -489,23 +486,26 @@ impl FileSystem for RWFS {
     fn symlink(
         &self,
         parent: InodeID,
-        name: &OsStr,
-        to: &Path,
+        name: &str,
+        to: &str,
         uid: u32,
         gid: u32,
     ) -> FsResult<InodeID> {
-        let iid = mutex_lock!(self.ibitmap).alloc()?;
+        let iid = self.ibitmap.lock().alloc()?;
         // symlink permissions are always 0777 since on Linux they are not used anyway
         let mut inode = Inode::new(
-            iid, parent, FileType::Lnk, uid, gid, FilePerm::from_bits(PERM_MASK).unwrap(),
-            &self.path, self.mode.is_encrypted(), self.sb_meta_for_inode.clone(),
+            iid, parent, FileType::Lnk, uid, gid,
+            FilePerm::from_bits(PERM_MASK).unwrap(),
+            self.mode.is_encrypted(),
+            self.sb_meta_for_inode.clone(), self.device.clone(),
+            self.time_source.now(),
         )?;
         inode.set_link(to)?;
 
         let alock = self.get_inode(parent, true)?;
-        let mut lock = rwlock_write!(alock);
+        let mut lock = alock.write();
         lock.add_child(name, FileType::Lnk, iid)?;
-        update_times!(lock, Atime, Ctime, Mtime);
+        update_times!(self, lock, Atime, Ctime, Mtime);
 
         self.insert_inode(iid, inode)?;
         Ok(iid)
@@ -513,8 +513,8 @@ impl FileSystem for RWFS {
 
     fn rename(
         &self,
-        from: InodeID, name: &OsStr,
-        to: InodeID, newname: &OsStr
+        from: InodeID, name: &str,
+        to: InodeID, newname: &str
     ) -> FsResult<()> {
         // remove to/newname unless it's a non-empty dir
         if let Some(iid) = self.lookup(to, newname)? {
@@ -527,41 +527,41 @@ impl FileSystem for RWFS {
 
         let from_inode = self.get_inode(from, true)?;
         if from == to {
-            let mut lock = rwlock_write!(from_inode);
+            let mut lock = from_inode.write();
             lock.rename_child(name, newname)?;
-            update_times!(lock, Atime, Ctime, Mtime);
+            update_times!(self, lock, Atime, Ctime, Mtime);
         } else {
-            let mut lock = rwlock_write!(from_inode);
+            let mut lock = from_inode.write();
             let (iid, tp) = lock.remove_child(name)?;
-            update_times!(lock, Atime, Ctime, Mtime);
+            update_times!(self, lock, Atime, Ctime, Mtime);
 
             let alock = self.get_inode(to, true)?;
-            let mut lock = rwlock_write!(alock);
+            let mut lock = alock.write();
             lock.add_child(newname, tp, iid)?;
-            update_times!(lock, Atime, Ctime, Mtime);
+            update_times!(self, lock, Atime, Ctime, Mtime);
         }
         Ok(())
     }
 
-    fn lookup(&self, iid: InodeID, name: &OsStr) -> FsResult<Option<InodeID>> {
+    fn lookup(&self, iid: InodeID, name: &str) -> FsResult<Option<InodeID>> {
         // Currently we don't use de_cac
         let alock = self.get_inode(iid, true)?;
-        let mut lock = rwlock_write!(alock);
+        let mut lock = alock.write();
         let ret = lock.find_child(name)?;
-        update_times!(lock, Atime);
+        update_times!(self, lock, Atime);
         // debug!("lookup parent {} name {:?} found {:?}", iid, name, ret);
         Ok(ret)
     }
 
     fn listdir(
         &self, iid: InodeID, offset: usize, num: usize,
-    ) -> FsResult<Vec<(InodeID, PathBuf, FileType)>> {
+    ) -> FsResult<Vec<(InodeID, String, FileType)>> {
         let alock = self.get_inode(iid, true)?;
-        let mut lock = rwlock_write!(alock);
+        let mut lock = alock.write();
         let l = lock.read_child(offset, num)?.into_iter().map(
             |DirEntry {ipos, tp, name}| (ipos, name.into(), tp)
         ).collect();
-        update_times!(lock, Atime);
+        update_times!(self, lock, Atime);
         Ok(l)
     }
 
@@ -573,9 +573,9 @@ impl FileSystem for RWFS {
         len: usize,
     ) -> FsResult<()> {
         let alock = self.get_inode(iid, true)?;
-        let mut lock = rwlock_write!(alock);
+        let mut lock = alock.write();
         lock.fallocate(mode, offset, len)?;
-        update_times!(lock, Atime, Ctime, Mtime);
+        update_times!(self, lock, Atime, Ctime, Mtime);
         Ok(())
     }
 }
@@ -584,7 +584,7 @@ impl FileSystem for RWFS {
 pub fn nf_nb_change(
     pointer: &Arc<RwLock<(usize, usize)>>, f: isize, b: isize
 ) -> FsResult<()> {
-    let mut lock = rwlock_write!(pointer);
+    let mut lock = pointer.write();
     lock.0 = lock.0.checked_add_signed(f).unwrap();
     lock.1 = lock.1.checked_add_signed(b).unwrap();
     Ok(())

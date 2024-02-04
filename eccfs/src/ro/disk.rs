@@ -1,5 +1,5 @@
 use crate::rw_as_blob;
-use std::mem::size_of;
+use core::mem::size_of;
 
 pub const INODE_ALIGN: usize = 16;
 
@@ -121,7 +121,7 @@ impl AsRef<[u8]> for DInodeDir {
     fn as_ref(&self) -> &[u8] {
         let ptr = self as *const DInodeDir as *const u8;
         unsafe {
-            std::slice::from_raw_parts(ptr,
+            core::slice::from_raw_parts(ptr,
                 size_of::<DInodeDirBaseNoInline>()
                 + self.dir_base.nr_idx as usize * size_of::<EntryIndex>()
             )
@@ -133,7 +133,7 @@ impl AsMut<[u8]> for DInodeDir {
     fn as_mut(&mut self) -> &mut [u8] {
         let ptr = self as *mut DInodeDir as *mut u8;
         unsafe {
-            std::slice::from_raw_parts_mut(ptr,
+            core::slice::from_raw_parts_mut(ptr,
                 size_of::<DInodeDirBaseNoInline>()
                 + self.dir_base.nr_idx as usize * size_of::<EntryIndex>()
             )

@@ -1,14 +1,11 @@
 use crate::*;
 use crate::vfs::*;
 use super::disk::*;
-use std::time::{SystemTime, Duration};
-use std::mem::{size_of, size_of_val};
+use core::mem::{size_of, size_of_val};
 use crate::htree::*;
-use std::ffi::OsStr;
 use super::*;
-use std::str::FromStr;
-use std::fs::{File, OpenOptions};
-use std::io::prelude::*;
+use alloc::string::String;
+use core::slice;
 
 pub struct DirEntry {
     pub ipos: u64,
@@ -37,30 +34,31 @@ impl From<DiskDirEntry> for DirEntry {
         Self {
             ipos: value.ipos,
             tp: value.tp.into(),
-            name: String::from(std::str::from_utf8(
+            name: core::str::from_utf8(
                 &value.name[..value.len as usize]
-            ).unwrap())
+            ).unwrap().to_string(),
         }
     }
 }
 
 enum InodeExt {
     Reg {
-        data_file_name: PathBuf,
+        data_file_name: String,
         htree_org_len: u64, // in blocks
         data: RWHashTree,
     },
     RegInline(Vec<u8>),
     Dir {
-        data_file_name: PathBuf,
+        data_file_name: String,
         htree_org_len: u64, // in blocks
         data: RWHashTree,
     },
-    LnkInline(PathBuf),
+    LnkInline(String),
     Lnk {
-        lnk_name: PathBuf,
-        data_file_name: PathBuf,
+        lnk_name: String,
+        data_file_name: String,
         name_file_ke: KeyEntry,
+        backend: Arc<dyn RWStorage>,
     },
 }
 
@@ -73,15 +71,15 @@ pub struct Inode {
     pub nlinks: u16,
     uid: u32,
     gid: u32,
-    atime: SystemTime,
-    ctime: SystemTime,
-    mtime: SystemTime,
+    atime: u32,
+    ctime: u32,
+    mtime: u32,
     size: usize, // with . and ..
     ext: InodeExt,
     encrypted: bool,
-    fs_path: PathBuf,
     key_gen: KeyGen,
     sb_meta: Arc<RwLock<(usize, usize)>>,
+    device: Arc<dyn Device>,
 }
 
 pub fn iid_to_htree_logi_pos(iid: InodeID) -> usize {
@@ -91,7 +89,7 @@ pub fn iid_to_htree_logi_pos(iid: InodeID) -> usize {
 pub fn iid_hash(iid: InodeID) -> FsResult<Hash256> {
     sha3_256_any(
         unsafe {
-            std::slice::from_raw_parts(
+            slice::from_raw_parts(
                 &iid as *const InodeID as *const u8,
                 size_of::<InodeID>(),
             )
@@ -107,7 +105,7 @@ pub fn iid_hash_name(iid: InodeID) -> FsResult<String> {
 fn iid_hash_check(iid: InodeID, exp_hash: &Hash256) -> FsResult<()> {
     sha3_256_any_check(
         unsafe {
-            std::slice::from_raw_parts(
+            slice::from_raw_parts(
                 &iid as *const InodeID as *const u8,
                 size_of::<InodeID>(),
             )
@@ -116,39 +114,13 @@ fn iid_hash_check(iid: InodeID, exp_hash: &Hash256) -> FsResult<()> {
     )
 }
 
-fn new_data_file(mut dir: PathBuf, iid: InodeID) -> FsResult<PathBuf> {
-    let hash = iid_hash(iid)?;
-    let fname = hex::encode_upper(hash);
-    assert_eq!(fname.len(), DATA_FILE_NAME_LEN);
-    dir.push(fname.clone());
-
-    {
-        // try create new file
-        let _ = io_try!(OpenOptions::new()
-                            .create_new(true)
-                            .read(true)
-                            .write(true)
-                            .open(&dir)
-        );
-    }
-
-    Ok(fname.into())
-}
-
-fn new_data_storage(mut dir: PathBuf, iid : InodeID) -> FsResult<(PathBuf, Box<dyn RWStorage>)> {
-    let fname = new_data_file(dir.clone(), iid)?;
-    dir.push(fname.clone());
-
-    Ok((fname, Box::new(FileStorage::new(&dir, true)?)))
-}
-
 impl Inode {
     pub fn new_from_raw(
         raw: &InodeBytes,
         iid: InodeID,
-        fs_path: &PathBuf,
         encrypted: bool,
         sb_meta: Arc<RwLock<(usize, usize)>>,
+        device: Arc<dyn Device>,
     ) -> FsResult<Self> {
         let di_base = unsafe {
             &*(raw.as_ptr() as *const DInodeBase)
@@ -161,16 +133,16 @@ impl Inode {
             nlinks: di_base.nlinks,
             uid: di_base.uid,
             gid: di_base.gid,
-            atime: SystemTime::UNIX_EPOCH + Duration::from_secs(di_base.atime as u64),
-            ctime: SystemTime::UNIX_EPOCH + Duration::from_secs(di_base.ctime as u64),
-            mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(di_base.mtime as u64),
+            atime: di_base.atime,
+            ctime: di_base.ctime,
+            mtime: di_base.mtime,
             size: di_base.size as usize,
             // just something to hold the place
-            ext: InodeExt::LnkInline(PathBuf::new()),
+            ext: InodeExt::LnkInline(String::new()),
             encrypted,
-            fs_path: fs_path.clone(),
             key_gen: KeyGen::new(),
             sb_meta,
+            device: device.clone(),
         };
 
         ret.ext = match tp {
@@ -190,12 +162,11 @@ impl Inode {
                         &*(raw.as_ptr() as *const DInodeReg)
                     };
                     iid_hash_check(iid, &di.data_file)?;
-                    let mut p = fs_path.clone();
+
                     let fname = hex::encode_upper(&di.data_file);
                     assert_eq!(fname.len(), DATA_FILE_NAME_LEN);
-                    p.push(fname.clone());
 
-                    let mut back = FileStorage::new(&p, true)?;
+                    let back = device.open_rw_storage(&fname)?;
                     assert_eq!(back.get_len()?, blk2byte!(di.len));
                     assert_eq!(
                         mht::get_phy_nr_blk(di.base.size.div_ceil(BLK_SZ as u64)),
@@ -206,7 +177,7 @@ impl Inode {
                         htree_org_len: di.len,
                         data: RWHashTree::new(
                             None,
-                            Box::new(back),
+                            back,
                             di.base.size.div_ceil(BLK_SZ as u64),
                             Some(FSMode::from_key_entry(di.data_file_ke.clone(), encrypted)),
                             encrypted,
@@ -219,12 +190,11 @@ impl Inode {
                     &*(raw.as_ptr() as *const DInodeDir)
                 };
                 iid_hash_check(iid, &di.data_file)?;
-                let mut p = fs_path.clone();
+
                 let fname = hex::encode_upper(&di.data_file);
                 assert_eq!(fname.len(), DATA_FILE_NAME_LEN);
-                p.push(fname.clone());
 
-                let mut back = FileStorage::new(&p, true)?;
+                let back = device.open_rw_storage(&fname)?;
                 assert_eq!(back.get_len()?, blk2byte!(di.len));
                 assert_eq!(
                     mht::get_phy_nr_blk(di.base.size.div_ceil(BLK_SZ as u64)),
@@ -235,7 +205,7 @@ impl Inode {
                     htree_org_len: di.len,
                     data: RWHashTree::new(
                         None,
-                        Box::new(back),
+                        back,
                         di.base.size.div_ceil(BLK_SZ as u64),
                         Some(FSMode::from_key_entry(di.data_file_ke.clone(), encrypted)),
                         encrypted,
@@ -248,11 +218,9 @@ impl Inode {
                     let di = unsafe {
                         &*(raw.as_ptr() as *const DInodeLnkInline)
                     };
-                    let lnk_name = PathBuf::from_str(
-                        std::str::from_utf8(
-                            &di.name[..di.base.size as usize]
-                        ).unwrap()
-                    ).unwrap();
+                    let lnk_name = core::str::from_utf8(
+                        &di.name[..di.base.size as usize]
+                    ).unwrap().to_string();
                     InodeExt::LnkInline(lnk_name)
                 } else {
                     // single block file
@@ -262,16 +230,13 @@ impl Inode {
                     iid_hash_check(iid, &di.data_file)?;
 
                     // read data block
-                    let mut p = fs_path.clone();
                     let fname = hex::encode_upper(&di.data_file);
                     assert_eq!(fname.len(), DATA_FILE_NAME_LEN);
-                    p.push(fname.clone());
 
-                    let mut f = io_try!(File::open(p));
-                    assert_eq!(get_file_sz(&mut f)?, BLK_SZ as u64);
+                    let backend = device.open_rw_storage(&fname)?;
+                    assert_eq!(backend.get_len()?, BLK_SZ as u64);
                     assert_eq!(di.len, 1);
-                    let mut blk = [0u8; BLK_SZ];
-                    io_try!(f.read_exact(&mut blk));
+                    let mut blk = backend.read_blk(0)?;
                     crypto_in(
                         &mut blk,
                         CryptoHint::from_key_entry(
@@ -281,15 +246,14 @@ impl Inode {
                         )
                     )?;
 
-                    let lnk_name = PathBuf::from_str(
-                        std::str::from_utf8(
-                            &blk[..di.base.size as usize]
-                        ).unwrap()
-                    ).unwrap();
+                    let lnk_name = core::str::from_utf8(
+                        &blk[..di.base.size as usize]
+                    ).unwrap().to_string();
                     InodeExt::Lnk {
                         lnk_name,
                         data_file_name: fname.into(),
                         name_file_ke: di.name_file_ke.clone(),
+                        backend,
                     }
                 }
             }
@@ -304,9 +268,10 @@ impl Inode {
         uid: u32,
         gid: u32,
         perm: FilePerm,
-        fs_path: &PathBuf,
         encrypted: bool,
         sb_meta: Arc<RwLock<(usize, usize)>>,
+        device: Arc<dyn Device>,
+        now: u32,
     ) -> FsResult<Self> {
         let mut inode = Self {
             iid,
@@ -315,20 +280,20 @@ impl Inode {
             nlinks: 1,
             uid,
             gid,
-            atime: SystemTime::now(),
-            ctime: SystemTime::now(),
-            mtime: SystemTime::now(),
+            atime: now,
+            ctime: now,
+            mtime: now,
             size: 0,
-            ext: InodeExt::LnkInline(PathBuf::new()),
+            ext: InodeExt::LnkInline(String::new()),
             encrypted,
-            fs_path: fs_path.clone(),
             key_gen: KeyGen::new(),
             sb_meta,
+            device,
         };
         inode.ext = match tp {
             FileType::Reg => InodeExt::RegInline(Vec::new()),
             FileType::Dir => {
-                let (data_file_name, backend) = new_data_storage(fs_path.clone(), iid)?;
+                let (data_file_name, backend) = inode.new_storage()?;
                 let mut data = RWHashTree::new(
                     None,
                     backend,
@@ -351,10 +316,12 @@ impl Inode {
                     name: [0u8; DIRENT_NAME_MAX],
                 };
                 dotdot.name[..2].copy_from_slice("..".as_bytes());
-                let dde = vec![dot, dotdot];
+                let mut dde = Vec::new();
+                dde.push(dot);
+                dde.push(dotdot);
                 data.write_exact(0,
                     unsafe {
-                        std::slice::from_raw_parts(
+                        slice::from_raw_parts(
                             dde.as_ptr() as *const u8,
                             dde.len() * DIRENT_SZ,
                         )
@@ -371,10 +338,19 @@ impl Inode {
                     data,
                 }
             }
-            FileType::Lnk => InodeExt::LnkInline(PathBuf::new()),
+            FileType::Lnk => InodeExt::LnkInline(String::new()),
         };
 
         Ok(inode)
+    }
+
+    fn new_storage(&self) -> FsResult<(String, Arc<dyn RWStorage>)> {
+        let hash = iid_hash(self.iid)?;
+        let fname = hex::encode_upper(hash);
+        assert_eq!(fname.len(), DATA_FILE_NAME_LEN);
+
+        let storage = self.device.create_rw_storage(&fname)?;
+        Ok((fname, storage))
     }
 
     pub fn read_data(&mut self, offset: usize, to: &mut [u8]) -> FsResult<usize> {
@@ -429,7 +405,7 @@ impl Inode {
     fn reg_expand_to_htree(&mut self) -> FsResult<()> {
         let (data_file_name, htree) = match &self.ext {
             InodeExt::RegInline(data) => {
-                let (data_file_name, backend) = new_data_storage(self.fs_path.clone(), self.iid)?;
+                let (data_file_name, backend) = self.new_storage()?;
                 let mut htree = RWHashTree::new(
                     None,
                     backend,
@@ -460,7 +436,8 @@ impl Inode {
             InodeExt::Reg { data_file_name, data, .. } =>{
                 assert!(self.size <= REG_INLINE_DATA_MAX);
 
-                let mut d = vec![0u8; self.size];
+                let mut d = Vec::new();
+                d.resize(self.size, 0u8);
                 assert_eq!(data.read_exact(0, &mut d)?, self.size);
 
                 (d, data_file_name.clone())
@@ -532,7 +509,7 @@ impl Inode {
         Ok(())
     }
 
-    pub fn get_link(&self) -> FsResult<PathBuf> {
+    pub fn get_link(&self) -> FsResult<String> {
         match &self.ext {
             InodeExt::LnkInline(lnk) => Ok(lnk.clone()),
             InodeExt::Lnk { lnk_name, .. } => Ok(lnk_name.clone()),
@@ -540,13 +517,13 @@ impl Inode {
         }
     }
 
-    pub fn set_link(&mut self, target: &Path) -> FsResult<()> {
+    pub fn set_link(&mut self, target: &str) -> FsResult<()> {
         match &mut self.ext {
             InodeExt::LnkInline(lnk) => *lnk = target.into(),
             InodeExt::Lnk { lnk_name, .. } => *lnk_name = target.into(),
             _ => return Err(new_error!(FsError::PermissionDenied)),
         }
-        self.size = target.as_os_str().len();
+        self.size = target.len();
         Ok(())
     }
 
@@ -560,7 +537,7 @@ impl Inode {
                 } else {
                     // assert!(self.size / DIRENT_SZ >= offset);
                     if self.size / DIRENT_SZ < offset {
-                        return Ok(vec![]);
+                        return Ok(Vec::new());
                     }
                     num.min(self.size / DIRENT_SZ - offset)
                 };
@@ -572,7 +549,7 @@ impl Inode {
                 let read = data.read_exact(
                     offset * DIRENT_SZ,
                     unsafe {
-                        std::slice::from_raw_parts_mut(
+                        slice::from_raw_parts_mut(
                             de_list.as_mut_ptr() as *mut u8,
                             len,
                         )
@@ -587,7 +564,7 @@ impl Inode {
         }
     }
 
-    pub fn find_child(&mut self, name: &OsStr) -> FsResult<Option<InodeID>> {
+    pub fn find_child(&mut self, name: &str) -> FsResult<Option<InodeID>> {
         let mut done = 0;
         let nr_de = self.size / DIRENT_SZ;
         while done < nr_de {
@@ -605,7 +582,7 @@ impl Inode {
         Ok(None)
     }
 
-    fn find_child_pos(&mut self, name: &OsStr) -> FsResult<Option<(usize, DirEntry)>> {
+    fn find_child_pos(&mut self, name: &str) -> FsResult<Option<(usize, DirEntry)>> {
         let mut done = 0;
         let nr_de = self.size / DIRENT_SZ;
         while done < nr_de {
@@ -621,7 +598,7 @@ impl Inode {
         Ok(None)
     }
 
-    pub fn add_child(&mut self, name: &OsStr, tp: FileType, iid: InodeID) -> FsResult<()> {
+    pub fn add_child(&mut self, name: &str, tp: FileType, iid: InodeID) -> FsResult<()> {
         if self.find_child(name)?.is_some() {
             return Err(new_error!(FsError::AlreadyExists));
         }
@@ -631,7 +608,7 @@ impl Inode {
                 let dde: DiskDirEntry = DirEntry {
                     ipos: iid,
                     tp: tp.into(),
-                    name: String::from(name.to_str().unwrap()),
+                    name: name.to_string(),
                 }.into();
                 let written = data.write_exact(self.size, dde.as_ref())?;
                 assert_eq!(written, size_of_val(&dde));
@@ -642,7 +619,7 @@ impl Inode {
         }
     }
 
-    pub fn rename_child(&mut self, name: &OsStr, newname: &OsStr) -> FsResult<()> {
+    pub fn rename_child(&mut self, name: &str, newname: &str) -> FsResult<()> {
         if self.find_child(newname)?.is_some() {
             return Err(new_error!(FsError::AlreadyExists));
         }
@@ -650,7 +627,7 @@ impl Inode {
         if let Some((pos, mut de)) = self.find_child_pos(name)? {
             match &mut self.ext {
                 InodeExt::Dir { data, .. } => {
-                    de.name = String::from(newname.to_str().unwrap());
+                    de.name = newname.to_string();
                     let dde: DiskDirEntry = de.into();
                     let written = data.write_exact(pos * DIRENT_SZ, dde.as_ref())?;
                     assert_eq!(written, DIRENT_SZ);
@@ -663,7 +640,7 @@ impl Inode {
         }
     }
 
-    pub fn remove_child(&mut self, name: &OsStr) -> FsResult<(InodeID, FileType)> {
+    pub fn remove_child(&mut self, name: &str) -> FsResult<(InodeID, FileType)> {
         if let Some((pos, de)) = self.find_child_pos(name)? {
             if let InodeExt::Dir { data, .. } = &mut self.ext {
                 if pos * DIRENT_SZ != self.size - DIRENT_SZ {
@@ -722,13 +699,15 @@ impl Inode {
         Ok(())
     }
 
-    fn write_lnk_file(f: &Path, lnk_name: &Path, encrypted: Option<Key128>) -> FsResult<FSMode> {
-        let mut store = FileStorage::new(f, true)?;
+    fn write_lnk_file(
+        store: &Arc<dyn RWStorage>,
+        lnk_name: &str,
+        encrypted: Option<Key128>,
+    ) -> FsResult<FSMode> {
         store.set_len(1)?;
 
         let mut blk = [0u8; BLK_SZ];
-        let b = lnk_name.as_os_str();
-        blk[..b.len()].copy_from_slice(b.to_str().unwrap().as_bytes());
+        blk[..lnk_name.len()].copy_from_slice(lnk_name.as_bytes());
 
         let mode = crypto_out(
             &mut blk,
@@ -767,13 +746,13 @@ impl Inode {
             InodeExt::Reg { data, .. } | InodeExt::Dir { data, .. } => {
                 data.flush()?.into_key_entry();
             }
-            InodeExt::Lnk { lnk_name, data_file_name, name_file_ke } => {
-                if lnk_name.as_os_str().len() <= LNK_INLINE_MAX {
+            InodeExt::Lnk { lnk_name, data_file_name, name_file_ke, backend } => {
+                if lnk_name.len() <= LNK_INLINE_MAX {
                     file_to_remove = Some(data_file_name.clone());
                     self.ext = InodeExt::LnkInline(lnk_name.clone());
                 } else {
                     *name_file_ke = Self::write_lnk_file(
-                        &data_file_name,
+                        backend,
                         lnk_name,
                         if self.encrypted {
                             Some(self.key_gen.gen_key(0)?)
@@ -784,13 +763,13 @@ impl Inode {
                 }
             }
             InodeExt::LnkInline(lnk_name) => {
-                if lnk_name.as_os_str().len() > LNK_INLINE_MAX {
-                    let data_file_name = new_data_file(
-                        self.fs_path.clone(), self.iid
-                    )?;
+                // shape to single block storage file
+                if lnk_name.len() > LNK_INLINE_MAX {
+                    let lnk = lnk_name.clone();
+                    let (data_file_name, mut backend) = self.new_storage()?;
                     let name_file_ke = Self::write_lnk_file(
-                        &data_file_name,
-                        lnk_name,
+                        &mut backend,
+                        &lnk,
                         if self.encrypted {
                             Some(self.key_gen.gen_key(0)?)
                         } else {
@@ -799,9 +778,10 @@ impl Inode {
                     )?.into_key_entry();
 
                     self.ext = InodeExt::Lnk {
-                        lnk_name: lnk_name.clone(),
+                        lnk_name: lnk,
                         data_file_name,
                         name_file_ke,
+                        backend,
                     };
 
                     nf_nb_change(&self.sb_meta, 1, 1)?;
@@ -823,9 +803,9 @@ impl Inode {
             nlinks: self.nlinks,
             uid: self.uid,
             gid: self.gid,
-            atime: self.atime.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() as u32,
-            ctime: self.ctime.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() as u32,
-            mtime: self.mtime.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() as u32,
+            atime: self.atime,
+            ctime: self.ctime,
+            mtime: self.mtime,
             size: self.size as u64,
         };
         let mut ib = [0u8; INODE_SZ];
@@ -833,7 +813,7 @@ impl Inode {
             InodeExt::Reg { data_file_name, htree_org_len, data } => {
                 let fname_ke = iid_hash(self.iid)?;
                 let fname = hex::encode_upper(fname_ke);
-                assert_eq!(fname.as_bytes(), data_file_name.as_os_str().to_str().unwrap().as_bytes());
+                assert_eq!(fname.as_bytes(), data_file_name.as_bytes());
 
                 let inode = unsafe {
                     &mut *(ib.as_mut_ptr() as *mut DInodeReg)
@@ -855,7 +835,7 @@ impl Inode {
             InodeExt::Dir { data_file_name, htree_org_len, data } => {
                 let fname_ke = iid_hash(self.iid)?;
                 let fname = hex::encode_upper(fname_ke);
-                assert_eq!(fname.as_bytes(), data_file_name.as_os_str().to_str().unwrap().as_bytes());
+                assert_eq!(fname.as_bytes(), data_file_name.as_bytes());
 
                 let inode = unsafe {
                     &mut *(ib.as_mut_ptr() as *mut DInodeDir)
@@ -866,14 +846,13 @@ impl Inode {
                 inode.len = mht::get_phy_nr_blk(data.logi_len);
                 nf_nb_change(&self.sb_meta, 0, inode.len as isize - *htree_org_len as isize)?;
             }
-            InodeExt::Lnk { lnk_name, data_file_name, name_file_ke } => {
+            InodeExt::Lnk { lnk_name, data_file_name, name_file_ke, .. } => {
                 let fname_ke = iid_hash(self.iid)?;
                 let fname = hex::encode_upper(fname_ke);
-                assert_eq!(fname.as_bytes(), data_file_name.as_os_str().to_str().unwrap().as_bytes());
+                assert_eq!(fname.as_bytes(), data_file_name.as_bytes());
 
                 // check link name length
-                let b = lnk_name.as_os_str();
-                assert!(b.len() < LNK_NAME_MAX);
+                assert!(lnk_name.len() < LNK_NAME_MAX);
 
                 let inode = unsafe {
                     &mut *(ib.as_mut_ptr() as *mut DInodeLnk)
@@ -888,9 +867,8 @@ impl Inode {
                     &mut *(ib.as_mut_ptr() as *mut DInodeLnkInline)
                 };
                 inode.base = base;
-                let b = lnk_name.as_os_str();
-                assert!(b.len() < LNK_INLINE_MAX);
-                inode.name[..b.len()].copy_from_slice(b.to_str().unwrap().as_bytes());
+                assert!(lnk_name.len() < LNK_INLINE_MAX);
+                inode.name[..lnk_name.len()].copy_from_slice(lnk_name.as_bytes());
             }
         }
         Ok(ib)
@@ -902,16 +880,15 @@ impl Inode {
         self.sync_meta()
     }
 
-    fn remove_fs_file(&self, fname: &Path) -> FsResult<()> {
-        let mut p = self.fs_path.clone();
-        p.push(fname);
-        let nr_blk = io_try!(fs::metadata(&p)).len().div_ceil(BLK_SZ as u64);
-        io_try!(fs::remove_file(p));
+    fn remove_fs_file(&self, fname: &str) -> FsResult<()> {
+        let nr_blk = self.device.get_storage_len(&fname)?.div_ceil(BLK_SZ as u64);
+        self.device.remove_storage(&fname)?;
+
         nf_nb_change(&self.sb_meta, -1, -(nr_blk as isize))?;
         Ok(())
     }
 
-    // return whether remove a data file and removed file blocks
+    // called when an inode is flushed
     pub fn remove_data_file(self) -> FsResult<()> {
         let df_name = match &self.ext {
             InodeExt::Reg { data_file_name, .. } => data_file_name,

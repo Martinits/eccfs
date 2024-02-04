@@ -3,8 +3,8 @@ use std::time::SystemTime;
 use libc::c_int;
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
-use eccfs::*;
-use eccfs::vfs::*;
+use crate::*;
+use crate::vfs::*;
 use std::time::Duration;
 use std::fs::{File, OpenOptions};
 use std::io::prelude::*;
@@ -549,6 +549,7 @@ fn mount_ovl(mode: Vec<FSMode>, target: Vec<String>) -> FsResult<FSMode> {
     Ok(Arc::into_inner(amode).unwrap().into_inner().unwrap())
 }
 
+#[test]
 fn main() -> FsResult<()> {
     let args: Vec<String> = std::env::args().collect();
     assert!(args.len() >= 3);
@@ -588,16 +589,4 @@ fn main() -> FsResult<()> {
     }
 
     Ok(())
-}
-
-#[test]
-fn test() {
-    if cfg!(debug_assertions) {
-        std::env::set_var("RUST_BACKTRACE", "1");
-        env_logger::builder()
-            .filter_level(log::LevelFilter::Debug)
-            .init();
-    }
-
-    main().unwrap();
 }

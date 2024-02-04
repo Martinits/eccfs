@@ -1,20 +1,22 @@
 use crate::*;
-use std::collections::HashSet;
+use alloc::collections::BTreeSet;
+use alloc::vec::Vec;
+use core::{mem, slice};
 
 pub struct BitMap {
-    used: HashSet<u64>,
+    used: BTreeSet<u64>,
     possible_free_pos: u64,
 }
 
 impl BitMap {
     pub fn new(raw_blks: Vec<Block>) -> FsResult<Self> {
         let bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(
+            slice::from_raw_parts(
                 raw_blks.as_ptr() as *const u8,
                 blk2byte!(raw_blks.len()) as usize,
             )
         };
-        let mut used = HashSet::new();
+        let mut used = BTreeSet::new();
         let mut possible_free_pos = bytes.len() as u64 * 8;
         for (i, b) in bytes.iter().enumerate() {
             for off in 0..8 {
@@ -61,7 +63,7 @@ impl BitMap {
 
     // after calling this function, this struct can not be used anymore
     pub fn write(&mut self) -> FsResult<Vec<Block>> {
-        let pos_list: Vec<_> = std::mem::take(&mut self.used).into_iter().collect();
+        let pos_list: Vec<_> = mem::take(&mut self.used).into_iter().collect();
 
         Self::write_from_list(pos_list)
     }
@@ -71,9 +73,10 @@ impl BitMap {
         let max_pos = *pos_list.iter().max().unwrap() as usize;
         let blks_needed = (max_pos + 1).div_ceil(BLK_SZ * 8);
 
-        let mut blks = vec![[0u8; BLK_SZ]; blks_needed];
+        let mut blks = Vec::new();
+        blks.resize(blks_needed, [0u8; BLK_SZ]);
         let bytes: &mut [u8] = unsafe {
-            std::slice::from_raw_parts_mut(
+            slice::from_raw_parts_mut(
                 blks.as_mut_ptr() as *mut u8,
                 blk2byte!(blks_needed) as usize,
             )

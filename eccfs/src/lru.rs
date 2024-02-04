@@ -1,13 +1,17 @@
 use crate::*;
-use std::sync::Arc;
-use std::num::NonZeroUsize;
+use alloc::{
+    sync::Arc,
+    vec::Vec,
+};
 extern crate lru;
-use std::hash::Hash;
+use core::num::NonZeroUsize;
 
 #[cfg(feature = "channel_lru")]
 use std::sync::mpsc::{self, Sender, Receiver};
 #[cfg(feature = "channel_lru")]
 use std::thread;
+
+use core::hash::Hash;
 
 pub struct Lru<K: Hash + Eq + Clone, V>(lru::LruCache<K, (Arc<V>, bool)>);
 

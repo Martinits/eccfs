@@ -1,19 +1,17 @@
 /// This module provides data in blocks
 pub(crate) mod ro;
 pub(crate) mod rw;
-pub(crate) mod builder;
 
 pub use ro::*;
 pub use rw::*;
-pub use builder::*;
 
 pub const HTREE_ROOT_BLK_PHY_POS: u64 = 0;
 
 pub mod mht {
     use crate::*;
     use crate::crypto::*;
-    use std::io::Write;
     use super::*;
+    use core::mem;
 
     pub const ENTRY_PER_BLK: u64 = BLK_SZ as u64 / KEY_ENTRY_SZ as u64;
     pub const CHILD_PER_BLK: u64 = ENTRY_PER_BLK * 1 / 4;
@@ -103,7 +101,7 @@ pub mod mht {
             Index(idx) => idx,
             Data(idx) => CHILD_PER_BLK + idx,
         };
-        let mut ret: KeyEntry = [0u8; std::mem::size_of::<KeyEntry>()];
+        let mut ret: KeyEntry = [0u8; mem::size_of::<KeyEntry>()];
         let from = pos as usize * KEY_ENTRY_SZ;
         ret.copy_from_slice(&blk[from .. from + KEY_ENTRY_SZ]);
         ret
@@ -122,9 +120,8 @@ pub mod mht {
                 CHILD_PER_BLK + idx
             },
         };
-        let mut writer: &mut [u8] = &mut blk[pos as usize * KEY_ENTRY_SZ ..];
-        let written = io_try!(writer.write(ke));
-        assert_eq!(written, KEY_ENTRY_SZ);
+        let start = pos as usize * KEY_ENTRY_SZ;
+        blk[start..start + KEY_ENTRY_SZ].copy_from_slice(ke.as_slice());
         Ok(())
     }
 }

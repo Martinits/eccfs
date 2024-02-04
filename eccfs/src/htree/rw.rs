@@ -1,9 +1,12 @@
-use std::sync::Arc;
+use alloc::{
+    sync::Arc,
+    vec::Vec,
+    collections::BTreeMap,
+};
 use crate::bcache::*;
 use crate::*;
 use crate::crypto::*;
 use crate::storage::RWStorage;
-use std::collections::HashMap;
 use super::*;
 
 
@@ -15,18 +18,18 @@ const RW_KE_BUF_CAP_RATIO: usize = 2;
 pub struct RWHashTree {
     // in rw, every htree has its own cache
     cache: RWCache,
-    backend: Box<dyn RWStorage>,
+    backend: Arc<dyn RWStorage>,
     pub logi_len: u64, // logical size, in blocks
     encrypted: bool,
     root_mode: FSMode,
-    ke_buf: HashMap<u64, KeyEntry>,
+    ke_buf: BTreeMap<u64, KeyEntry>,
     key_gen: KeyGen,
 }
 
 impl RWHashTree {
     pub fn new(
         cache_cap_hint: Option<usize>,
-        backend: Box<dyn RWStorage>,
+        backend: Arc<dyn RWStorage>,
         length: u64,
         root_mode: Option<FSMode>,
         encrypted: bool,
@@ -43,7 +46,7 @@ impl RWHashTree {
             logi_len: length,
             encrypted,
             root_mode: root_mode.unwrap_or(FSMode::new_zero(encrypted)),
-            ke_buf: HashMap::new(),
+            ke_buf: BTreeMap::new(),
             key_gen: KeyGen::new(),
         }
     }
@@ -124,14 +127,18 @@ impl RWHashTree {
         let start = { // in blocks
             if offset % BLK_SZ != 0 {
                 let len = BLK_SZ - offset % BLK_SZ;
-                assert_eq!(self.write_exact(offset, &vec![0u8; len])?, len);
+                let mut b = Vec::new();
+                b.resize(len, 0u8);
+                assert_eq!(self.write_exact(offset, &b)?, len);
             }
             mht::get_phy_nr_blk(offset.div_ceil(BLK_SZ) as u64)
         };
         let end = { // in blocks
             if end % BLK_SZ != 0 {
                 let len = end % BLK_SZ;
-                assert_eq!(self.write_exact(end - len, &vec![0u8; len])?, len);
+                let mut b = Vec::new();
+                b.resize(len, 0u8);
+                assert_eq!(self.write_exact(end - len, &b)?, len);
             }
             mht::get_phy_nr_blk((end / BLK_SZ) as u64)
         };
@@ -141,7 +148,7 @@ impl RWHashTree {
         for pos in start..end {
             if !mht::is_idx(pos) {
                 if let Some(apay) = self.cache.get_blk_try(pos)? {
-                    rwlock_write!(apay).fill(0);
+                    apay.write().fill(0);
                     self.cache.mark_dirty(pos)?;
                 } else {
                     self.write_back(pos, [0u8; BLK_SZ])?;
@@ -206,7 +213,7 @@ impl RWHashTree {
             let ke = if let Some(ke) = self.ke_buf.remove(&child_phy) {
                 ke
             } else {
-                let lock = rwlock_read!(cur_apay);
+                let lock = cur_apay.read();
                 mht::get_ke(
                     &lock,
                     // if this is the last index, it's an data block
@@ -295,7 +302,7 @@ impl RWHashTree {
             let round = (total - done).min(BLK_SZ - offset % BLK_SZ);
             let start = offset % BLK_SZ;
             to[done..done+round].copy_from_slice(
-                &rwlock_read!(apay)[start..start+round]
+                &apay.read()[start..start+round]
             );
             done += round;
             offset += round;
@@ -312,7 +319,7 @@ impl RWHashTree {
             )?.unwrap();
             let round = (total - done).min(BLK_SZ - offset % BLK_SZ);
             let start = offset % BLK_SZ;
-            rwlock_write!(apay)[start..start+round].copy_from_slice(
+            apay.write()[start..start+round].copy_from_slice(
                 &from[done..done+round]
             );
             done += round;
@@ -354,13 +361,15 @@ impl RWHashTree {
         // keys.sort();
         // debug!("Flush ke buf");
         // debug!("ke_buf: {:?}", keys);
-        let mut buf: HashMap<_, Vec<_>> = HashMap::new();
+        let mut buf: BTreeMap<_, Vec<_>> = BTreeMap::new();
         for (pos, ke) in mem::take(&mut self.ke_buf) {
             let (f, idx) = mht::get_father_idx(pos);
             if let Some(v) = buf.get_mut(&f) {
                 v.push((idx, ke));
             } else {
-                assert!(buf.insert(f, vec![(idx, ke)]).is_none());
+                let mut v = Vec::with_capacity(1);
+                v.push((idx, ke));
+                assert!(buf.insert(f, v).is_none());
             }
         }
         // debug!("buf: {:?}", buf.iter().map(
@@ -397,7 +406,7 @@ impl RWHashTree {
 
             if let Some(apay) = self.cache.get_blk_try(pos)? {
                 // cached just write, do not handle new ke
-                let mut lock = rwlock_write!(apay);
+                let mut lock = apay.write();
                 write_ke_list!(&mut lock, ke_list);
                 self.cache.mark_dirty(pos)?;
                 continue;
@@ -425,7 +434,7 @@ impl RWHashTree {
                     last_ke_dest = Some((idxphy, apay.clone(), child_idx));
 
                     let ke = {
-                        let lock = rwlock_read!(apay);
+                        let lock = apay.read();
                         mht::get_ke(
                             &lock,
                             // must be index
@@ -495,7 +504,7 @@ impl RWHashTree {
 
             // write last ke to first_cached_idx or root
             if let Some((pos, apay, idx)) = last_ke_dest {
-                let mut lock = rwlock_write!(apay);
+                let mut lock = apay.write();
                 mht::set_ke(&mut lock, mht::Index(idx), &ke)?;
                 self.cache.mark_dirty(pos)?;
             } else {
@@ -516,7 +525,7 @@ impl RWHashTree {
         let (father, child_idx) = mht::get_father_idx(pos);
         if let Some(apay) = self.cache.get_blk_try(father)? {
             // debug!("ke of {} goes to cached father {}", pos, father);
-            let mut lock = rwlock_write!(apay);
+            let mut lock = apay.write();
             mht::set_ke(
                 &mut lock,
                 child_idx,
@@ -585,6 +594,7 @@ impl RWHashTree {
     }
 }
 
+#[cfg(feature = "std_file")]
 #[cfg(test)]
 mod test {
     use crate::*;

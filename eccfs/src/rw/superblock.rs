@@ -1,7 +1,6 @@
 use crate::*;
 use crate::crypto::*;
 use super::*;
-use std::io::prelude::*;
 
 
 pub const SUPERBLOCK_POS: u64 = 0;
@@ -70,7 +69,7 @@ impl SuperBlock {
         }
 
         let ibitmap_ke = Vec::from(unsafe {
-            std::slice::from_raw_parts(
+            core::slice::from_raw_parts(
                 raw_blk[size_of::<DSuperBlockBase>()..].as_ptr() as *const KeyEntry,
                 dsb_base.ibitmap_len as usize,
             )
@@ -133,18 +132,17 @@ impl SuperBlock {
         dsb_base.itbl_len = self.itbl_len as u64;
         dsb_base.itbl_ke = self.itbl_ke;
 
-        let mut writer: &mut [u8] = &mut raw_blk[size_of::<DSuperBlockBase>()..];
         let bytes = self.ibitmap_ke.len() * size_of::<KeyEntry>();
-        assert!(size_of::<DSuperBlockBase>() + bytes <= BLK_SZ);
-        let written = io_try!(writer.write(
+        let end = size_of::<DSuperBlockBase>() + bytes;
+        assert!(end <= BLK_SZ);
+        raw_blk[size_of::<DSuperBlockBase>()..end].copy_from_slice(
             unsafe {
-                std::slice::from_raw_parts(
+                core::slice::from_raw_parts(
                     self.ibitmap_ke.as_ptr() as *const u8,
                     bytes,
                 )
             }
-        ));
-        assert_eq!(written, bytes);
+        );
 
         Ok(raw_blk)
     }

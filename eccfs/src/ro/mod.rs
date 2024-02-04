@@ -1,13 +1,10 @@
 pub mod superblock;
 pub mod inode;
 pub mod disk;
-pub mod builder;
 
 use crate::vfs::*;
-use std::sync::{Arc, RwLock, Mutex};
-use std::path::{Path, PathBuf};
+use spin::{RwLock, Mutex};
 use crate::*;
-use std::ffi::OsStr;
 use superblock::*;
 use crate::htree::*;
 use inode::*;
@@ -15,8 +12,14 @@ use crate::bcache::*;
 use crate::storage::*;
 use crate::lru::*;
 use disk::*;
-use std::mem::size_of;
+use core::mem::size_of;
+use core::slice;
 use crate::crypto::half_md4;
+use alloc::vec::Vec;
+use alloc::string::String;
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use alloc::string::ToString;
 
 
 pub const ROFS_MAGIC: u64 = 0x00454343524F4653; // ECCROFS
@@ -49,14 +52,12 @@ impl Drop for ROFS {
 
 impl ROFS {
     pub fn new(
-        path: &Path,
         mode: FSMode,
         cache_data: usize,
         cache_inode: usize,
         cache_de: usize,
+        storage: Box<dyn ROStorage>
     ) -> FsResult<Self> {
-        let mut storage = FileStorage::new(path, false)?;
-
         // read superblock
         let mut sb_blk = storage.read_blk(SUPERBLOCK_POS)?;
         // check crypto
@@ -65,7 +66,7 @@ impl ROFS {
 
         // start cache channel server
         let cac = ROCache::new(
-            Box::new(storage),
+            storage,
             if cache_data == 0 {
                 DEFAULT_CACHE_CAP
             } else {
@@ -132,7 +133,8 @@ impl ROFS {
         assert!(offset as usize % INODE_ALIGN == 0);
 
         // try read dinode_base to get inode type
-        let mut raw = vec![0u8; size_of::<DInodeBase>()];
+        let mut raw = Vec::new();
+        raw.resize(size_of::<DInodeBase>(), 0u8);
         let start = pos64_to_byte(bpos, offset) as usize;
         if self.inode_tbl.read_exact(start, &mut raw)? != raw.len() {
             return Err(new_error!(FsError::UnexpectedEof));
@@ -184,8 +186,8 @@ impl ROFS {
             iid,
             itp,
             self.backend.clone(),
-            rwlock_read!(self.sb).file_sec_start,
-            rwlock_read!(self.sb).file_sec_len,
+            self.sb.read().file_sec_start,
+            self.sb.read().file_sec_len,
             self.mode.is_encrypted(),
             self.cache_data,
         )
@@ -193,7 +195,7 @@ impl ROFS {
 
     fn get_inode(&self, iid: InodeID) -> FsResult<Arc<Inode>> {
         if let Some(mu_icac) = &self.icac {
-            let mut icac = mutex_lock!(mu_icac);
+            let mut icac = mu_icac.lock();
             if let Some(ainode) = icac.get(&iid)? {
                 Ok(ainode)
             } else {
@@ -209,11 +211,12 @@ impl ROFS {
         }
     }
 
-    fn get_dir_ent_name(&self, de: &DirEntry) -> FsResult<PathBuf> {
+    fn get_dir_ent_name(&self, de: &DirEntry) -> FsResult<String> {
         let DirEntry {len, name, ..} = de;
         let name = if *len as usize > name.len() {
             let pos = u64::from_le_bytes(name[..8].try_into().unwrap());
-            let mut buf = vec![0u8; *len as usize];
+            let mut buf = Vec::new();
+            buf.resize((*len) as usize, 0u8);
 
             let read = self.path_tbl.as_ref().unwrap()
                 .read_exact(pos as usize, buf.as_mut_slice())?;
@@ -222,11 +225,9 @@ impl ROFS {
             }
             String::from_utf8(buf).map_err(|_| new_error!(FsError::InvalidData))?
         } else {
-            std::str::from_utf8(
+            core::str::from_utf8(
                 name.split_at(*len as usize).0
-            ).map_err(
-                |_| new_error!(FsError::InvalidData)
-            )?.into()
+            ).unwrap().to_string()
         };
         Ok(name.into())
     }
@@ -235,13 +236,13 @@ impl ROFS {
         &self,
         de_list: &[DirEntry],
         hash: u64,
-        name: &OsStr
+        name: &str
     ) -> FsResult<Option<InodeID>> {
         for de in de_list.iter().filter(
             |de| de.hash == hash
         ) {
             let real_name = self.get_dir_ent_name(de)?;
-            if real_name.as_os_str() == name {
+            if real_name == name {
                 return Ok(Some(de.ipos))
             }
         }
@@ -255,19 +256,19 @@ impl FileSystem for ROFS {
     }
 
     fn finfo(&self) -> FsResult<FsInfo> {
-        rwlock_read!(self.sb).get_fsinfo()
+        self.sb.read().get_fsinfo()
     }
 
     fn fsync(&mut self) -> FsResult<()> {
         if let Some(ref icac) = self.icac {
-            mutex_lock!(icac).flush_wb()?;
+            icac.lock().flush_wb()?;
         }
 
         if let Some(ref de_cac) = self.de_cac {
-            mutex_lock!(de_cac).flush_wb()?;
+            de_cac.lock().flush_wb()?;
         }
 
-        mutex_lock!(self.backend).flush()?;
+        self.backend.lock().flush()?;
 
         Ok(())
     }
@@ -280,11 +281,12 @@ impl FileSystem for ROFS {
         self.get_inode(iid)?.get_meta()
     }
 
-    fn iread_link(&self, iid: InodeID) -> FsResult<PathBuf> {
+    fn iread_link(&self, iid: InodeID) -> FsResult<String> {
         match self.get_inode(iid)?.get_link()? {
             LnkName::Short(s) => Ok(s),
             LnkName::Long(pos, len) => {
-                let mut buf = vec![0u8; len];
+                let mut buf = Vec::new();
+                buf.resize(len, 0u8);
                 let read = self.path_tbl.as_ref().unwrap()
                             .read_exact(pos as usize, buf.as_mut_slice())?;
                 if read != len {
@@ -299,13 +301,13 @@ impl FileSystem for ROFS {
 
     fn isync_meta(&self, iid: InodeID) -> FsResult<()> {
         if let Some(ref icac) = self.icac {
-            mutex_lock!(icac).try_pop_key(&iid, false)?;
+            icac.lock().try_pop_key(&iid, false)?;
         }
 
         Ok(())
     }
 
-    fn lookup(&self, iid: InodeID, name: &OsStr) -> FsResult<Option<InodeID>> {
+    fn lookup(&self, iid: InodeID, name: &str) -> FsResult<Option<InodeID>> {
         // Currently we don't use de_cac
         // because in order to maintain a map from inode full_path to inodeid,
         // we need to store full path in struct Inode.
@@ -315,7 +317,7 @@ impl FileSystem for ROFS {
         // This only influences SGX deployments, not FUSE,
         // because FUSE leverages kernel's dir entry cache.
 
-        let hash = half_md4(name.to_str().unwrap().as_bytes())?;
+        let hash = half_md4(name.as_bytes())?;
         match self.get_inode(iid)?.lookup_index(name)? {
             LookUpInfo::External(gstart, glen) => {
                 let step = size_of::<DirEntry>();
@@ -327,7 +329,7 @@ impl FileSystem for ROFS {
                     let ablk = self.dirent_tbl.as_ref().unwrap().get_blk(pos)?;
                     let round = (glen - done).min((BLK_SZ - off as usize) / step);
                     let de_list = unsafe {
-                        std::slice::from_raw_parts(
+                        slice::from_raw_parts(
                             ablk[off as usize..].as_ptr() as *const DirEntry, round)
                     };
                     if let Some(iid) = self.find_de_in_list(de_list, hash, name)? {
@@ -347,12 +349,13 @@ impl FileSystem for ROFS {
 
     fn listdir(
         &self, iid: InodeID, offset: usize, num: usize,
-    ) -> FsResult<Vec<(InodeID, PathBuf, FileType)>> {
+    ) -> FsResult<Vec<(InodeID, String, FileType)>> {
         match self.get_inode(iid)?.get_entry_list_info(offset, num)? {
             Some(DirEntryInfo::External(de_start, num)) => {
-                let mut de_list = vec![DirEntry::default(); num];
+                let mut de_list = Vec::new();
+                de_list.resize(num, DirEntry::default());
                 let to = unsafe {
-                    std::slice::from_raw_parts_mut(
+                    slice::from_raw_parts_mut(
                         de_list.as_mut_ptr() as *mut u8,
                         num * size_of::<DirEntry>(),
                     )

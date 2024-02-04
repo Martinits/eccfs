@@ -1,25 +1,45 @@
-use std::fs::{File, OpenOptions};
-use std::io::prelude::*;
-use std::io::SeekFrom;
 use crate::*;
-use std::path::Path;
+
+#[cfg(feature = "std_file")]
+use std::{
+    fs::{File, OpenOptions},
+    io::{prelude::*, SeekFrom},
+    path::Path,
+};
+
+extern crate alloc;
+use alloc::sync::Arc;
 
 pub trait ROStorage: Send + Sync {
-    fn read_blk(&mut self, pos: u64) -> FsResult<Block>;
-    fn read_blk_to(&mut self, pos: u64, to: &mut Block) -> FsResult<()>;
+    fn read_blk(&self, pos: u64) -> FsResult<Block>;
+    fn read_blk_to(&self, pos: u64, to: &mut Block) -> FsResult<()>;
 }
 
 pub trait RWStorage: ROStorage + Send + Sync {
-    fn write_blk(&mut self, pos: u64, from: &Block) -> FsResult<()>;
-    fn set_len(&mut self, nr_blk: u64) -> FsResult<()>;
+    fn write_blk(&self, pos: u64, from: &Block) -> FsResult<()>;
+    fn get_len(&self) -> FsResult<u64>;
+    fn set_len(&self, nr_blk: u64) -> FsResult<()>;
 }
 
+// for rw storage, it should remember the fs_dir path
+// for ro storage, remember ro image path only
+pub trait Device: Send + Sync {
+    fn create_ro_storage(&self, path: &str) -> FsResult<Arc<dyn ROStorage>>;
+    fn open_rw_storage(&self, path: &str) -> FsResult<Arc<dyn RWStorage>>;
+    fn create_rw_storage(&self, path: &str) -> FsResult<Arc<dyn RWStorage>>;
+    fn remove_storage(&self, path: &str) -> FsResult<()>;
+    fn get_storage_len(&self, path: &str) -> FsResult<u64>;
+    fn nr_storage(&self) -> FsResult<usize>;
+}
+
+#[cfg(feature = "std_file")]
 pub struct FileStorage {
     // path: String,
     handle: File,
     writable: bool,
 }
 
+#[cfg(feature = "std_file")]
 impl FileStorage {
     pub fn new(path: &Path, writable: bool) -> FsResult<Self> {
         let handle = io_try!(OpenOptions::new().read(true).write(writable).open(path));
@@ -36,6 +56,7 @@ impl FileStorage {
     }
 }
 
+#[cfg(feature = "std_file")]
 impl ROStorage for FileStorage {
     fn read_blk(&mut self, pos: u64) -> FsResult<Block> {
         let mut blk = [0u8; BLK_SZ] as Block;
@@ -56,6 +77,7 @@ impl ROStorage for FileStorage {
     }
 }
 
+#[cfg(feature = "std_file")]
 impl RWStorage for FileStorage {
     fn write_blk(&mut self, pos: u64, from: &Block) -> FsResult<()> {
         if !self.writable {
