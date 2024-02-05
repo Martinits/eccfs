@@ -137,7 +137,7 @@ mod key_gen {
 
     pub fn generate_random_key(kdk: &Key128, counter: u32, pos: u64) -> FsResult<Key128> {
         let mut nonce = [0u8; 16];
-        rand::thread_rng().fill_bytes(&mut nonce);
+        rand::rngs::OsRng.fill_bytes(&mut nonce);
 
         let mut mac = Cmac::<Aes128>::new_from_slice(kdk).unwrap();
         let input = KdfInput {
@@ -160,7 +160,7 @@ mod key_gen {
     impl KeyGen {
         pub fn new() -> Self {
             let mut kdk = [0u8; size_of::<Key128>()];
-            rand::thread_rng().fill_bytes(&mut kdk);
+            rand::rngs::OsRng.fill_bytes(&mut kdk);
             Self {
                 kdk,
                 used_time: 0,
@@ -170,7 +170,7 @@ mod key_gen {
 
         pub fn gen_key(&mut self, pos_as_nonce: u64) -> FsResult<Key128> {
             if self.used_time >= 16 {
-                rand::thread_rng().fill_bytes(&mut self.kdk);
+                rand::rngs::OsRng.fill_bytes(&mut self.kdk);
                 self.used_time = 0;
             }
             let key = generate_random_key(&self.kdk, self.key_gen_counter, pos_as_nonce)?;

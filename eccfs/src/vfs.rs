@@ -201,6 +201,7 @@ impl Into<u16> for FileType {
     }
 }
 
+#[cfg(feature = "fuse")]
 impl Into<fuser::FileType> for FileType {
     fn into(self) -> fuser::FileType {
         match self {
