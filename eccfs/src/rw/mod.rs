@@ -37,7 +37,7 @@ pub struct RWFS {
     inode_tbl: Mutex<RWHashTree>,
     icac: Mutex<Lru<InodeID, RwLock<Inode>>>,
     de_cac: Option<Mutex<Lru<String, InodeID>>>,
-    key_gen: KeyGen,
+    key_gen: Mutex<KeyGen>,
     sb_meta_for_inode: Arc<RwLock<(usize, usize)>>,
     device: Arc<dyn Device>,
     sb_storage: Arc<dyn RWStorage>,
@@ -135,7 +135,7 @@ impl RWFS {
             } else {
                 None
             },
-            key_gen: KeyGen::new(),
+            key_gen: Mutex::new(KeyGen::new()),
             sb_meta_for_inode,
             device,
             sb_storage,
@@ -250,7 +250,7 @@ macro_rules! update_times {
 }
 
 impl FileSystem for RWFS {
-    fn destroy(&mut self) -> FsResult<FSMode> {
+    fn destroy(&self) -> FsResult<FSMode> {
         // sync data and meta
         self.fsync()?;
 
@@ -262,7 +262,7 @@ impl FileSystem for RWFS {
             let pos = i as u64 + self.sb.read().ibitmap_start;
             let ke = crypto_out(blk,
                 if self.mode.is_encrypted() {
-                    Some(self.key_gen.gen_key(pos)?)
+                    Some(self.key_gen.lock().gen_key(pos)?)
                 } else {
                     None
                 },
@@ -294,7 +294,7 @@ impl FileSystem for RWFS {
         let mode = crypto_out(&mut sb_blk,
             if self.mode.is_encrypted() {
                 let key = if self.regen_root_key {
-                    self.key_gen.gen_key(SUPERBLOCK_POS)?
+                    self.key_gen.lock().gen_key(SUPERBLOCK_POS)?
                 } else {
                     self.mode.get_key().unwrap()
                 };
@@ -313,7 +313,7 @@ impl FileSystem for RWFS {
         self.sb.read().get_fsinfo()
     }
 
-    fn fsync(&mut self) -> FsResult<()> {
+    fn fsync(&self) -> FsResult<()> {
         for (iid, i) in self.icac.lock().flush_wb()? {
             let inode = i.into_inner();
             self.write_back_inode(iid, inode)?;

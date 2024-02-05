@@ -363,7 +363,7 @@ impl FileSystem for OverlayFS {
         Ok(())
     }
 
-    fn destroy(&mut self) -> FsResult<FSMode> {
+    fn destroy(&self) -> FsResult<FSMode> {
         for fs in self.layers[1..].iter() {
             fs.write().destroy()?;
         }
@@ -388,7 +388,7 @@ impl FileSystem for OverlayFS {
         Ok(info)
     }
 
-    fn fsync(&mut self) -> FsResult<()> {
+    fn fsync(&self) -> FsResult<()> {
         for fs in self.layers.iter().rev() {
             fs.write().fsync()?;
         }

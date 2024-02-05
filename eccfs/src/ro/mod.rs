@@ -251,7 +251,7 @@ impl ROFS {
 }
 
 impl FileSystem for ROFS {
-    fn destroy(&mut self) -> FsResult<FSMode> {
+    fn destroy(&self) -> FsResult<FSMode> {
         Ok(self.mode.clone())
     }
 
@@ -259,7 +259,7 @@ impl FileSystem for ROFS {
         self.sb.read().get_fsinfo()
     }
 
-    fn fsync(&mut self) -> FsResult<()> {
+    fn fsync(&self) -> FsResult<()> {
         if let Some(ref icac) = self.icac {
             icac.lock().flush_wb()?;
         }
