@@ -159,26 +159,26 @@ macro_rules! rw_as_blob {
     };
 }
 
-// #[macro_export]
-// macro_rules! mutex_lock {
-//     ($mu: expr) => {
-//         $mu.lock().map_err(|_| new_error!(FsError::MutexError))?
-//     };
-// }
-//
-// #[macro_export]
-// macro_rules! rwlock_read {
-//     ($mu: expr) => {
-//         $mu.read().map_err(|_| new_error!(FsError::RwLockError))?
-//     };
-// }
-//
-// #[macro_export]
-// macro_rules! rwlock_write {
-//     ($mu: expr) => {
-//         $mu.write().map_err(|_| new_error!(FsError::RwLockError))?
-//     };
-// }
+#[macro_export]
+macro_rules! mutex_lock {
+    ($mu: expr) => {
+        $mu.lock().map_err(|_| FsError::MutexError)?
+    };
+}
+
+#[macro_export]
+macro_rules! rwlock_read {
+    ($mu: expr) => {
+        $mu.read().map_err(|_| FsError::RwLockError)?
+    };
+}
+
+#[macro_export]
+macro_rules! rwlock_write {
+    ($mu: expr) => {
+        $mu.write().map_err(|_| FsError::RwLockError)?
+    };
+}
 
 #[macro_export]
 macro_rules! blk2byte {
