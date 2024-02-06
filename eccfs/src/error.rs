@@ -6,6 +6,10 @@ pub enum FsError {
     #[error("std::io error")]
     IOError(#[from] std::io::Error),
 
+    #[cfg(not(feature = "std_file"))]
+    #[error("std::io error")]
+    IOError,
+
     #[error("directory is not empty")]
     DirectoryNotEmpty,
 
@@ -103,6 +107,8 @@ impl Into<c_int> for FsError {
                     _ => 511 as c_int,
                 }
             },
+            #[cfg(not(feature = "std_file"))]
+            FsError::IOError => libc::EIO,
             FsError::DirectoryNotEmpty => libc::ENOTEMPTY,
             FsError::InvalidData => libc::EINVAL,
             FsError::InvalidParameter => libc::EINVAL,
