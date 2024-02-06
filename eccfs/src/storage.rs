@@ -11,7 +11,12 @@ extern crate alloc;
 use alloc::sync::Arc;
 
 pub trait ROStorage: Send + Sync {
-    fn read_blk(&self, pos: u64) -> FsResult<Block>;
+    fn read_blk(&self, pos: u64) -> FsResult<Block> {
+        let mut blk = [0u8; BLK_SZ] as Block;
+        self.read_blk_to(pos, &mut blk)?;
+        Ok(blk)
+    }
+
     fn read_blk_to(&self, pos: u64, to: &mut Block) -> FsResult<()>;
 }
 
@@ -51,20 +56,14 @@ impl FileStorage {
         })
     }
 
-    pub fn get_len(&mut self) -> FsResult<u64> {
-        get_file_sz(&mut self.handle)
+    pub fn get_len(&self) -> FsResult<u64> {
+        get_file_sz(&self.handle)
     }
 }
 
 #[cfg(feature = "std_file")]
 impl ROStorage for FileStorage {
-    fn read_blk(&mut self, pos: u64) -> FsResult<Block> {
-        let mut blk = [0u8; BLK_SZ] as Block;
-        self.read_blk_to(pos, &mut blk)?;
-        Ok(blk)
-    }
-
-    fn read_blk_to(&mut self, pos: u64, to: &mut Block) -> FsResult<()> {
+    fn read_blk_to(&self, pos: u64, to: &mut Block) -> FsResult<()> {
         let cur_len = io_try!(self.handle.seek(SeekFrom::End(0)));
         assert!(blk2byte!(pos) < cur_len);
         let position = io_try!(self.handle.seek(SeekFrom::Start(blk2byte!(pos))));
@@ -79,7 +78,7 @@ impl ROStorage for FileStorage {
 
 #[cfg(feature = "std_file")]
 impl RWStorage for FileStorage {
-    fn write_blk(&mut self, pos: u64, from: &Block) -> FsResult<()> {
+    fn write_blk(&self, pos: u64, from: &Block) -> FsResult<()> {
         if !self.writable {
             return Err(new_error!(FsError::PermissionDenied));
         }
@@ -98,7 +97,7 @@ impl RWStorage for FileStorage {
         }
     }
 
-    fn set_len(&mut self, nr_blk: u64) -> FsResult<()> {
+    fn set_len(&self, nr_blk: u64) -> FsResult<()> {
         // debug!("storage set len to {}", nr_blk);
         let len = blk2byte!(nr_blk);
         io_try!(self.handle.set_len(len));
