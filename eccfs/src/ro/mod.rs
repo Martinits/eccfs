@@ -50,11 +50,13 @@ impl Drop for ROFS {
     }
 }
 
+pub const DEFAULT_ICAC_CAP: usize = 32;
+
 impl ROFS {
     pub fn new(
         mode: FSMode,
         cache_data: usize,
-        cache_inode: usize,
+        cache_inode: Option<usize>,
         cache_de: usize,
         storage: Box<dyn ROStorage>
     ) -> FsResult<Self> {
@@ -107,6 +109,12 @@ impl ROFS {
             None
         };
 
+        let icac = cache_inode.map(
+            |sz| {
+                Mutex::new(Lru::new( if sz == 0 { DEFAULT_ICAC_CAP } else { sz }))
+            }
+        );
+
         Ok(ROFS {
             mode,
             sb: RwLock::new(sb),
@@ -115,11 +123,7 @@ impl ROFS {
             inode_tbl,
             dirent_tbl,
             path_tbl,
-            icac: if cache_inode != 0 {
-                Some(Mutex::new(Lru::new(cache_inode)))
-            } else {
-                None
-            },
+            icac,
             de_cac: if cache_de != 0 {
                 Some(Mutex::new(Lru::new(cache_de)))
             } else {

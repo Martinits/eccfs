@@ -1,5 +1,4 @@
 use crate::*;
-use crate::vfs::*;
 use super::disk::*;
 use core::mem::{size_of, size_of_val};
 use crate::htree::*;

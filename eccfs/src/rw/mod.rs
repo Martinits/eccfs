@@ -54,6 +54,8 @@ impl Drop for RWFS {
     }
 }
 
+pub const DEFAULT_ICAC_CAP: usize = 64;
+
 impl RWFS {
     pub fn new(
         regen_root_key: bool,
@@ -128,7 +130,7 @@ impl RWFS {
             ibitmap: Mutex::new(ibitmap),
             inode_tbl: Mutex::new(inode_tbl),
             icac: Mutex::new(Lru::new(
-                icache_cap_hint.unwrap_or(DEFAULT_CACHE_CAP)
+                icache_cap_hint.unwrap_or(DEFAULT_ICAC_CAP)
             )),
             de_cac: if cache_de != 0 {
                 Some(Mutex::new(Lru::new(cache_de)))

@@ -1,5 +1,4 @@
 use crate::*;
-use crate::vfs::*;
 use spin::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use alloc::collections::{BTreeMap, BTreeSet};
 
