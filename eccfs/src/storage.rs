@@ -29,7 +29,6 @@ pub trait RWStorage: ROStorage + Send + Sync {
 // for rw storage, it should remember the fs_dir path
 // for ro storage, remember ro image path only
 pub trait Device: Send + Sync {
-    fn create_ro_storage(&self, path: &str) -> FsResult<Arc<dyn ROStorage>>;
     fn open_rw_storage(&self, path: &str) -> FsResult<Arc<dyn RWStorage>>;
     fn create_rw_storage(&self, path: &str) -> FsResult<Arc<dyn RWStorage>>;
     fn remove_storage(&self, path: &str) -> FsResult<()>;

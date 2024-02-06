@@ -147,3 +147,21 @@ macro_rules! new_error{
         }
     }
 }
+
+#[allow(unused)]
+#[cfg(feature = "std_file")]
+#[macro_export]
+macro_rules! io_try {
+    ($e: expr) => {
+        $e.map_err(|e| FsError::IOError(e))?
+    };
+}
+
+#[allow(unused)]
+#[cfg(not(feature = "std_file"))]
+#[macro_export]
+macro_rules! io_try {
+    ($e: expr) => {
+        $e.map_err(|_| FsError::IOError)?
+    };
+}
