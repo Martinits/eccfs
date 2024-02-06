@@ -1,5 +1,4 @@
 use alloc::{
-    boxed::Box,
     sync::Arc,
     vec::Vec,
 };
@@ -192,12 +191,12 @@ impl ROCacheServer {
 pub struct ROCache {
     lru: Lru<u64, Block>,
     _capacity: usize,
-    backend: Box<dyn ROStorage>,
+    backend: Arc<dyn ROStorage>,
 }
 
 impl ROCache {
     pub fn new(
-        backend: Box<dyn ROStorage>,
+        backend: Arc<dyn ROStorage>,
         capacity: usize,
     ) -> Self {
         Self {

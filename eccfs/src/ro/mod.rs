@@ -17,7 +17,6 @@ use core::slice;
 use crate::crypto::half_md4;
 use alloc::vec::Vec;
 use alloc::string::String;
-use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::string::ToString;
 
@@ -58,7 +57,7 @@ impl ROFS {
         cache_data: usize,
         cache_inode: Option<usize>,
         cache_de: usize,
-        storage: Box<dyn ROStorage>
+        storage: Arc<dyn ROStorage>
     ) -> FsResult<Self> {
         // read superblock
         let mut sb_blk = storage.read_blk(SUPERBLOCK_POS)?;
