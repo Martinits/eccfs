@@ -47,7 +47,7 @@ impl RWHashTree {
             encrypted,
             root_mode: root_mode.unwrap_or(FSMode::new_zero(encrypted)),
             ke_buf: BTreeMap::new(),
-            key_gen: KeyGen::new(),
+            key_gen: KeyGen::new(length),
         }
     }
 

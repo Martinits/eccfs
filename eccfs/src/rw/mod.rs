@@ -123,6 +123,13 @@ impl RWFS {
 
         let sb_meta_for_inode = Arc::new(RwLock::new((sb.nr_data_file, sb.blocks)));
 
+        let seed = half_md4(unsafe {
+            core::slice::from_raw_parts(
+                &mode as *const FSMode as *const u8,
+                size_of::<FSMode>(),
+            )
+        })?;
+
         Ok(RWFS {
             regen_root_key,
             mode,
@@ -137,7 +144,7 @@ impl RWFS {
             } else {
                 None
             },
-            key_gen: Mutex::new(KeyGen::new()),
+            key_gen: Mutex::new(KeyGen::new(seed)),
             sb_meta_for_inode,
             device,
             sb_storage,
