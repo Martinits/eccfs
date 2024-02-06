@@ -11,6 +11,7 @@ pub mod rw;
 pub(crate) mod bcache;
 pub(crate) mod htree;
 pub(crate) mod storage;
+pub use storage::{ROStorage, RWStorage, Device};
 pub(crate) mod crypto;
 pub(crate) mod lru;
 pub mod error;
