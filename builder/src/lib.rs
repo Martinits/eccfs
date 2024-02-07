@@ -1,6 +1,8 @@
 pub mod ro;
 pub mod rw;
 pub(crate) mod htree;
+extern crate alloc;
+pub(crate) use eccfs::*;
 
 pub mod io_wrapper {
     use std::io::prelude::*;
@@ -15,7 +17,7 @@ pub mod io_wrapper {
     pub fn write_vec_as_bytes<T>(f: &mut File, v: &Vec<T>) -> FsResult<()> {
         io_try!(f.write_all(
             unsafe {
-                slice::from_raw_parts(
+                std::slice::from_raw_parts(
                     v.as_ptr() as *const u8,
                     v.len() * size_of::<T>()
                 )
@@ -55,7 +57,7 @@ pub mod io_wrapper {
     #[macro_export]
     macro_rules! io_try {
         ($e: expr) => {
-            $e.map_err(|e| new_error!(FsError::IOError))?
+            $e.map_err(|e| new_error!(FsError::IOError(e)))?
         };
     }
 }

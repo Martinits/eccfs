@@ -1,11 +1,15 @@
 use crate::*;
 
-#[cfg(feature = "std_file")]
+#[cfg(feature = "std")]
 use std::{
     fs::{File, OpenOptions},
     io::{prelude::*, SeekFrom},
     path::Path,
 };
+#[cfg(feature = "std")]
+use std::sync::Mutex;
+#[cfg(feature = "std")]
+use std::os::unix::fs::FileExt;
 
 extern crate alloc;
 use alloc::sync::Arc;
@@ -26,8 +30,7 @@ pub trait RWStorage: ROStorage + Send + Sync {
     fn set_len(&self, nr_blk: u64) -> FsResult<()>;
 }
 
-// for rw storage, it should remember the fs_dir path
-// for ro storage, remember ro image path only
+// for rw storage only, it should remember the fs_dir path
 pub trait Device: Send + Sync {
     fn open_rw_storage(&self, path: &str) -> FsResult<Arc<dyn RWStorage>>;
     fn create_rw_storage(&self, path: &str) -> FsResult<Arc<dyn RWStorage>>;
@@ -36,70 +39,58 @@ pub trait Device: Send + Sync {
     fn nr_storage(&self) -> FsResult<usize>;
 }
 
-#[cfg(feature = "std_file")]
+#[cfg(feature = "std")]
 pub struct FileStorage {
-    // path: String,
-    handle: File,
+    f: Mutex<File>,
     writable: bool,
 }
 
-#[cfg(feature = "std_file")]
+#[cfg(feature = "std")]
 impl FileStorage {
+    #[allow(unused)]
     pub fn new(path: &Path, writable: bool) -> FsResult<Self> {
-        let handle = io_try!(OpenOptions::new().read(true).write(writable).open(path));
+        let f = io_try!(OpenOptions::new().read(true).write(writable).open(path));
 
         Ok(Self {
-            handle,
-            // path: path.to_str().unwrap().to_string(),
+            f: Mutex::new(f),
             writable,
         })
     }
-
-    pub fn get_len(&self) -> FsResult<u64> {
-        get_file_sz(&self.handle)
-    }
 }
 
-#[cfg(feature = "std_file")]
+#[cfg(feature = "std")]
 impl ROStorage for FileStorage {
     fn read_blk_to(&self, pos: u64, to: &mut Block) -> FsResult<()> {
-        let cur_len = io_try!(self.handle.seek(SeekFrom::End(0)));
-        assert!(blk2byte!(pos) < cur_len);
-        let position = io_try!(self.handle.seek(SeekFrom::Start(blk2byte!(pos))));
-        if position != blk2byte!(pos) {
-            Err(new_error!(FsError::UnexpectedEof))
-        } else {
-            io_try!(self.handle.read_exact(to));
-            Ok(())
-        }
+        io_try!(mutex_lock!(self.f).read_exact_at(to, blk2byte!(pos)));
+        Ok(())
     }
 }
 
-#[cfg(feature = "std_file")]
+#[cfg(feature = "std")]
 impl RWStorage for FileStorage {
     fn write_blk(&self, pos: u64, from: &Block) -> FsResult<()> {
         if !self.writable {
             return Err(new_error!(FsError::PermissionDenied));
         }
-        let cur_len = io_try!(self.handle.seek(SeekFrom::End(0)));
 
-        // if blk2byte!(pos) >= cur_len {
+        let cur_len = self.get_len()?;
+        let offset = blk2byte!(pos);
+
+        // if offset >= cur_len {
         //     debug!("bad: write pos {} cur_len {}", pos, cur_len);
         // }
-        assert!(blk2byte!(pos) < cur_len);
+        assert!(offset < cur_len);
 
-        let position = io_try!(self.handle.seek(SeekFrom::Start(blk2byte!(pos))));
-        if position != blk2byte!(pos) {
-            Err(new_error!(FsError::UnexpectedEof))
-        } else {
-            Ok(io_try!(self.handle.write_all(from)))
-        }
+        Ok(io_try!(mutex_lock!(self.f).write_all_at(from, offset)))
     }
 
     fn set_len(&self, nr_blk: u64) -> FsResult<()> {
-        // debug!("storage set len to {}", nr_blk);
         let len = blk2byte!(nr_blk);
-        io_try!(self.handle.set_len(len));
+        io_try!(mutex_lock!(self.f).set_len(len));
         Ok(())
+    }
+
+    fn get_len(&self) -> FsResult<u64> {
+        Ok(io_try!(mutex_lock!(self.f).seek(SeekFrom::End(0))))
     }
 }

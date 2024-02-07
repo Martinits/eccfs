@@ -1,12 +1,15 @@
 use thiserror_no_std::Error;
 
+#[cfg(feature = "std")]
+use std::io::ErrorKind;
+
 #[derive(Debug, Error)]
 pub enum FsError {
-    #[cfg(feature = "std_file")]
+    #[cfg(feature = "std")]
     #[error("std::io error")]
     IOError(#[from] std::io::Error),
 
-    #[cfg(not(feature = "std_file"))]
+    #[cfg(not(feature = "std"))]
     #[error("std::io error")]
     IOError,
 
@@ -82,7 +85,7 @@ use libc::c_int;
 impl Into<c_int> for FsError {
     fn into(self) -> c_int {
         match self {
-            #[cfg(feature = "std_file")]
+            #[cfg(feature = "std")]
             FsError::IOError(io_err) => {
                 match io_err.kind() {
                     ErrorKind::NotFound => libc::ENOENT,
@@ -107,7 +110,7 @@ impl Into<c_int> for FsError {
                     _ => 511 as c_int,
                 }
             },
-            #[cfg(not(feature = "std_file"))]
+            #[cfg(not(feature = "std"))]
             FsError::IOError => libc::EIO,
             FsError::DirectoryNotEmpty => libc::ENOTEMPTY,
             FsError::InvalidData => libc::EINVAL,
@@ -149,7 +152,7 @@ macro_rules! new_error{
 }
 
 #[allow(unused)]
-#[cfg(feature = "std_file")]
+#[cfg(feature = "std")]
 #[macro_export]
 macro_rules! io_try {
     ($e: expr) => {
@@ -158,7 +161,7 @@ macro_rules! io_try {
 }
 
 #[allow(unused)]
-#[cfg(not(feature = "std_file"))]
+#[cfg(not(feature = "std"))]
 #[macro_export]
 macro_rules! io_try {
     ($e: expr) => {

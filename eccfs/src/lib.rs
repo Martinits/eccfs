@@ -1,6 +1,6 @@
 #![cfg_attr(feature = "nightly_build", int_roundings)]
 
-#![cfg_attr(not(any(feature = "builder", feature = "fuse")), no_std)]
+#![cfg_attr(not(any(feature = "fuse", feature = "std")), no_std)]
 
 
 extern crate alloc;
@@ -10,10 +10,10 @@ pub mod overlay;
 pub mod ro;
 pub mod rw;
 pub(crate) mod bcache;
-pub(crate) mod htree;
+pub mod htree;
 pub(crate) mod storage;
 pub use storage::{ROStorage, RWStorage, Device};
-pub(crate) mod crypto;
+pub mod crypto;
 pub(crate) mod lru;
 pub mod error;
 pub use error::*;

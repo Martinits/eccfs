@@ -1,20 +1,19 @@
 use std::io::prelude::*;
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
-use crate::*;
 use std::fs::{OpenOptions, self, File};
-use crate::crypto::*;
-use rand_core::RngCore;
-use crate::vfs::*;
+use eccfs::crypto::*;
 use super::*;
 use std::mem::{size_of_val, size_of};
-use super::disk::*;
-use super::superblock::*;
+use eccfs::ro::disk::*;
+use eccfs::ro::superblock::*;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::cmp::Ordering;
 use std::os::unix::fs::MetadataExt;
 use std::io::Write;
+use eccfs::ro::*;
+use eccfs::htree::*;
 
 
 const MAX_ENTRY_GROUP_LEN: usize = 16;
@@ -799,9 +798,6 @@ struct HTreeBuilder {
 
 impl HTreeBuilder {
     fn new(encrypted: bool) -> FsResult<Self> {
-        // init kdk
-        let mut kdk = [0u8; 16];
-        rand::thread_rng().fill_bytes(&mut kdk);
 
         Ok(Self {
             key_gen: KeyGen::new(),

@@ -139,7 +139,10 @@ impl Inode {
             // just something to hold the place
             ext: InodeExt::LnkInline(String::new()),
             encrypted,
+            #[cfg(not(feature = "std"))]
             key_gen: KeyGen::new(iid),
+            #[cfg(feature = "std")]
+            key_gen: KeyGen::new(),
             sb_meta,
             device: device.clone(),
         };
@@ -285,7 +288,10 @@ impl Inode {
             size: 0,
             ext: InodeExt::LnkInline(String::new()),
             encrypted,
+            #[cfg(not(feature = "std"))]
             key_gen: KeyGen::new(iid),
+            #[cfg(feature = "std")]
+            key_gen: KeyGen::new(),
             sb_meta,
             device,
         };

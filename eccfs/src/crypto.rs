@@ -122,8 +122,13 @@ mod key_gen {
     use super::Key128;
     use crate::*;
     use rand_core::RngCore;
+
+    #[cfg(not(feature = "std"))]
     use rand::SeedableRng;
+    #[cfg(not(feature = "std"))]
     use rand::rngs::SmallRng;
+    #[cfg(feature = "std")]
+
     use crate::alloc::borrow::ToOwned;
 
     #[repr(C)]
@@ -136,6 +141,14 @@ mod key_gen {
     }
     rw_as_blob!(KdfInput);
 
+    #[cfg(feature = "std")]
+    fn random_16b() -> [u8; 16] {
+        let mut ret = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut ret);
+        ret
+    }
+
+    #[cfg(not(feature = "std"))]
     fn random_16b(seed: u64) -> [u8; 16] {
         let mut ret = [0u8; 16];
         let mut small_rng = SmallRng::seed_from_u64(seed);
@@ -144,7 +157,10 @@ mod key_gen {
     }
 
     pub fn generate_random_key(kdk: &Key128, counter: u32, pos: u64) -> FsResult<Key128> {
+        #[cfg(not(feature = "std"))]
         let nonce = random_16b(pos);
+        #[cfg(feature = "std")]
+        let nonce = random_16b();
 
         let mut mac = Cmac::<Aes128>::new_from_slice(kdk).unwrap();
         let input = KdfInput {
@@ -165,6 +181,17 @@ mod key_gen {
     }
 
     impl KeyGen {
+        #[cfg(feature = "std")]
+        pub fn new() -> Self {
+            let kdk = random_16b();
+            Self {
+                kdk,
+                used_time: 0,
+                key_gen_counter: 0,
+            }
+        }
+
+        #[cfg(not(feature = "std"))]
         pub fn new(seed: u64) -> Self {
             let kdk = random_16b(seed);
             Self {
@@ -175,10 +202,18 @@ mod key_gen {
         }
 
         pub fn gen_key(&mut self, pos_as_nonce: u64) -> FsResult<Key128> {
+            #[cfg(not(feature = "std"))]
             if self.used_time >= 16 {
                 self.kdk = random_16b(pos_as_nonce);
                 self.used_time = 0;
             }
+
+            #[cfg(feature = "std")]
+            if self.used_time >= 16 {
+                self.kdk = random_16b();
+                self.used_time = 0;
+            }
+
             let key = generate_random_key(&self.kdk, self.key_gen_counter, pos_as_nonce)?;
             self.key_gen_counter += 1;
 
@@ -200,7 +235,7 @@ pub fn half_md4(buf: &[u8]) -> FsResult<u64> {
     Ok(u64::from_le_bytes(hash[4..12].try_into().unwrap()))
 }
 
-#[cfg(feature = "std_file")]
+#[cfg(feature = "std")]
 mod tests {
     #[test]
     fn sha3_256() {

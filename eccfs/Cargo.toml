@@ -29,5 +29,5 @@ anstream = "*"
 ro_cache_server = []
 channel_lru = []
 fuse = [ "dep:fuser" ]
-std_file = []
+std = [ "rand/default"]
 nightly_build = []

@@ -47,7 +47,10 @@ impl RWHashTree {
             encrypted,
             root_mode: root_mode.unwrap_or(FSMode::new_zero(encrypted)),
             ke_buf: BTreeMap::new(),
+            #[cfg(not(feature = "std"))]
             key_gen: KeyGen::new(length),
+            #[cfg(feature = "std")]
+            key_gen: KeyGen::new(),
         }
     }
 
@@ -594,7 +597,7 @@ impl RWHashTree {
     }
 }
 
-#[cfg(feature = "std_file")]
+#[cfg(feature = "std")]
 #[cfg(test)]
 mod test {
     use crate::*;
@@ -647,7 +650,7 @@ mod test {
         )?;
         Ok(RWHashTree::new(
             Some(10),
-            Box::new(back),
+            Arc::new(back),
             len,
             mode,
             false,

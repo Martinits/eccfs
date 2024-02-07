@@ -10,8 +10,10 @@ use eccfs::rw::superblock::*;
 use std::collections::HashMap;
 use std::os::unix::fs::MetadataExt;
 use std::io::Write;
-use eccfs::htree::*;
 use std::time::*;
+use eccfs::rw::inode::*;
+use eccfs::rw::bitmap::BitMap;
+use crate::htree::*;
 
 
 type ChildInfo = (PathBuf, FileType, InodeID);
@@ -553,7 +555,7 @@ mod test {
                 .init();
         }
 
-        let args: Vec<PathBuf> = env::args().collect();
+        let args: Vec<String> = env::args().collect();
         assert!(args.len() >= 5);
         let mode = args[3].clone();
         let target = args[4].clone();
@@ -623,7 +625,7 @@ mod test {
                 .init();
         }
 
-        let args: Vec<PathBuf> = env::args().collect();
+        let args: Vec<String> = env::args().collect();
         assert!(args.len() >= 5);
         let mode = args[3].clone();
         let target = args[4].clone();

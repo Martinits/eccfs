@@ -1,13 +1,13 @@
 use std::io::prelude::*;
 use std::io::SeekFrom;
 use std::path::PathBuf;
-use crate::*;
 use std::fs::{OpenOptions, self, File};
-use crate::crypto::*;
 use rand_core::RngCore;
 use super::*;
 use std::collections::HashMap;
 use std::os::unix::fs::MetadataExt;
+use eccfs::crypto::*;
+use eccfs::htree::*;
 
 pub struct HTreeBuilder {
     key_gen: KeyGen,
