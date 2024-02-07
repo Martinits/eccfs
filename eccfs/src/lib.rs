@@ -1,4 +1,4 @@
-#![cfg_attr(feature = "nightly_build", int_roundings)]
+#![cfg_attr(feature = "nightly_build", feature(int_roundings))]
 
 #![cfg_attr(not(any(feature = "fuse", feature = "std")), no_std)]
 

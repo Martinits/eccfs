@@ -127,7 +127,6 @@ mod key_gen {
     use rand::SeedableRng;
     #[cfg(not(feature = "std"))]
     use rand::rngs::SmallRng;
-    #[cfg(feature = "std")]
 
     use crate::alloc::borrow::ToOwned;
 
