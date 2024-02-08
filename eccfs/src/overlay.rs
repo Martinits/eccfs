@@ -4,7 +4,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 
 extern crate alloc;
 use alloc::vec::Vec;
-use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::string::{String, ToString};
 
 
@@ -75,7 +75,7 @@ const RW_LAYER_IDX: usize = 0;
 
 pub struct OverlayFS {
     /// filesystem layers, 0 is RW layer
-    layers: Vec<RwLock<Box<dyn FileSystem>>>,
+    layers: Vec<RwLock<Arc<dyn FileSystem>>>,
     /// inode cache, all found inodes are here, second number is next_iid
     icac: RwLock<(BTreeMap<InodeID, Inode>, InodeID)>,
 }
@@ -96,8 +96,8 @@ fn rm_black_out_prefix(name: &str) -> String {
 
 impl OverlayFS {
     pub fn new(
-        upper: Box<dyn FileSystem>,
-        mut lower: Vec<Box<dyn FileSystem>>,
+        upper: Arc<dyn FileSystem>,
+        mut lower: Vec<Arc<dyn FileSystem>>,
     ) -> FsResult<Self> {
         // prepare root dir
         lower.insert(RW_LAYER_IDX, upper);
@@ -230,7 +230,7 @@ impl OverlayFS {
 
     fn ensure_black_out_file(
         &self,
-        fs: &RwLockReadGuard<'_, Box<dyn FileSystem>>,
+        fs: &RwLockReadGuard<'_, Arc<dyn FileSystem>>,
         parent: InodeID,
         name: &str,
     ) -> FsResult<()> {
