@@ -254,26 +254,22 @@ impl ROFS {
 }
 
 impl FileSystem for ROFS {
-    fn destroy(&self) -> FsResult<FSMode> {
-        Ok(self.mode.clone())
-    }
-
     fn finfo(&self) -> FsResult<FsInfo> {
         self.sb.read().get_fsinfo()
     }
 
-    fn fsync(&self) -> FsResult<()> {
+    fn fsync(&self) -> FsResult<FSMode> {
         if let Some(ref icac) = self.icac {
-            icac.lock().flush_wb()?;
+            assert_eq!(icac.lock().flush_wb()?.len(), 0);
         }
 
         if let Some(ref de_cac) = self.de_cac {
-            de_cac.lock().flush_wb()?;
+            assert_eq!(de_cac.lock().flush_wb()?.len(), 0);
         }
 
         self.backend.lock().flush()?;
 
-        Ok(())
+        Ok(self.mode.clone())
     }
 
     fn iread(&self, iid: InodeID, offset: usize, to: &mut [u8]) -> FsResult<usize> {

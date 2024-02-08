@@ -362,13 +362,6 @@ impl FileSystem for OverlayFS {
         Ok(())
     }
 
-    fn destroy(&self) -> FsResult<FSMode> {
-        for fs in self.layers[1..].iter() {
-            fs.write().destroy()?;
-        }
-        self.layers[RW_LAYER_IDX].write().destroy()
-    }
-
     fn finfo(&self) -> FsResult<FsInfo> {
         let mut info = self.layers[RW_LAYER_IDX].read().finfo()?;
         for fs in self.layers[1..].iter() {
@@ -387,11 +380,12 @@ impl FileSystem for OverlayFS {
         Ok(info)
     }
 
-    fn fsync(&self) -> FsResult<()> {
-        for fs in self.layers.iter().rev() {
+    fn fsync(&self) -> FsResult<FSMode> {
+        for fs in self.layers[1..].iter().rev() {
             fs.write().fsync()?;
         }
-        Ok(())
+
+        self.layers[0].write().fsync()
     }
 
     fn iread(&self, iid: InodeID, offset: usize, to: &mut [u8]) -> FsResult<usize> {

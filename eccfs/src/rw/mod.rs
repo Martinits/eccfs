@@ -249,24 +249,8 @@ impl RWFS {
 
         Ok(())
     }
-}
 
-macro_rules! update_times {
-    ($self:ident, $lock: expr, $($x:expr),* ) => {
-        {
-            let now = $self.time_source.now();
-            $(
-                $lock.set_meta($x(now))?;
-            )*
-        }
-    };
-}
-
-impl FileSystem for RWFS {
-    fn destroy(&self) -> FsResult<FSMode> {
-        // sync data and meta
-        self.fsync()?;
-
+    fn wb_sb_file(&self) -> FsResult<FSMode> {
         // write bitmap
         let mut ibitmap_blks = self.ibitmap.lock().write()?;
         let mut ibitmap_ke = Vec::with_capacity(ibitmap_blks.len());
@@ -321,12 +305,25 @@ impl FileSystem for RWFS {
 
         Ok(mode)
     }
+}
 
+macro_rules! update_times {
+    ($self:ident, $lock: expr, $($x:expr),* ) => {
+        {
+            let now = $self.time_source.now();
+            $(
+                $lock.set_meta($x(now))?;
+            )*
+        }
+    };
+}
+
+impl FileSystem for RWFS {
     fn finfo(&self) -> FsResult<FsInfo> {
         self.sb.read().get_fsinfo()
     }
 
-    fn fsync(&self) -> FsResult<()> {
+    fn fsync(&self) -> FsResult<FSMode> {
         for (iid, i) in self.icac.lock().flush_wb()? {
             let inode = i.into_inner();
             self.write_back_inode(iid, inode)?;
@@ -349,7 +346,7 @@ impl FileSystem for RWFS {
         )?;
         lock.itbl_len = new_itbl_len;
 
-        Ok(())
+        self.wb_sb_file()
     }
 
     fn iread(&self, iid: InodeID, offset: usize, to: &mut [u8]) -> FsResult<usize> {

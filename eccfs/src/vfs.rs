@@ -36,7 +36,7 @@ pub trait FileSystem: Sync + Send {
 
     /// destroy this fs, called before all worklaods are finished for this fs
     fn destroy(&self) -> FsResult<FSMode> {
-        Err(FsError::NotSupported)
+        self.fsync()
     }
 
     /// get fs stat info in superblock
@@ -45,7 +45,7 @@ pub trait FileSystem: Sync + Send {
     }
 
     /// sync all filesystem, including metadata and user data
-    fn fsync(&self) -> FsResult<()> {
+    fn fsync(&self) -> FsResult<FSMode> {
         Err(FsError::NotSupported)
     }
 
