@@ -360,7 +360,7 @@ impl Inode {
 
     pub fn read_data(&mut self, offset: usize, to: &mut [u8]) -> FsResult<usize> {
         if offset >= self.size {
-            Err(new_error!(FsError::InvalidParameter))
+            Ok(0)
         } else {
             let readable = (self.size - offset).min(to.len());
             match &mut self.ext {
