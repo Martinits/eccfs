@@ -305,25 +305,8 @@ impl RWFS {
 
         Ok(mode)
     }
-}
 
-macro_rules! update_times {
-    ($self:ident, $lock: expr, $($x:expr),* ) => {
-        {
-            let now = $self.time_source.now();
-            $(
-                $lock.set_meta($x(now))?;
-            )*
-        }
-    };
-}
-
-impl FileSystem for RWFS {
-    fn finfo(&self) -> FsResult<FsInfo> {
-        self.sb.read().get_fsinfo()
-    }
-
-    fn fsync(&self) -> FsResult<FSMode> {
+    fn sync_itbl(&self) -> FsResult<()> {
         for (iid, i) in self.icac.lock().flush_wb()? {
             let inode = i.into_inner();
             self.write_back_inode(iid, inode)?;
@@ -345,8 +328,30 @@ impl FileSystem for RWFS {
             new_itbl_len as isize - lock.itbl_len as isize
         )?;
         lock.itbl_len = new_itbl_len;
+        Ok(())
+    }
+}
 
-        self.wb_sb_file()
+macro_rules! update_times {
+    ($self:ident, $lock: expr, $($x:expr),* ) => {
+        {
+            let now = $self.time_source.now();
+            $(
+                $lock.set_meta($x(now))?;
+            )*
+        }
+    };
+}
+
+impl FileSystem for RWFS {
+    fn finfo(&self) -> FsResult<FsInfo> {
+        self.sb.read().get_fsinfo()
+    }
+
+    fn fsync(&self) -> FsResult<FSMode> {
+        self.sync_itbl()?;
+        let ret =self.wb_sb_file()?;
+        Ok(ret)
     }
 
     fn iread(&self, iid: InodeID, offset: usize, to: &mut [u8]) -> FsResult<usize> {

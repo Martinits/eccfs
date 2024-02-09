@@ -381,6 +381,7 @@ impl FileSystem for OverlayFS {
     }
 
     fn fsync(&self) -> FsResult<FSMode> {
+        // debug!("ovl fsync");
         for fs in self.layers[1..].iter().rev() {
             fs.write().fsync()?;
         }
