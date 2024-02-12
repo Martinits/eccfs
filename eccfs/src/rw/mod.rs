@@ -350,8 +350,8 @@ impl FileSystem for RWFS {
 
     fn fsync(&self) -> FsResult<FSMode> {
         self.sync_itbl()?;
-        let ret =self.wb_sb_file()?;
-        Ok(ret)
+        let mode = self.wb_sb_file()?;
+        Ok(mode)
     }
 
     fn iread(&self, iid: InodeID, offset: usize, to: &mut [u8]) -> FsResult<usize> {

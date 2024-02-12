@@ -1,7 +1,7 @@
 use crate::*;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
-use core::{mem, slice};
+use core::slice;
 
 pub struct BitMap {
     used: BTreeSet<u64>,
@@ -29,6 +29,7 @@ impl BitMap {
             }
         }
 
+        // debug!("bitmap new {:?}", used);
         Ok(Self {
             used,
             possible_free_pos,
@@ -55,6 +56,7 @@ impl BitMap {
     pub fn free(&mut self, pos: u64) -> FsResult<()> {
         if self.used.remove(&pos) {
             self.possible_free_pos = self.possible_free_pos.min(pos);
+            // debug!("bitmap free {}", pos);
             Ok(())
         } else {
             Err(new_error!(FsError::NotFound))
@@ -63,7 +65,8 @@ impl BitMap {
 
     // after calling this function, this struct can not be used anymore
     pub fn write(&mut self) -> FsResult<Vec<Block>> {
-        let pos_list: Vec<_> = mem::take(&mut self.used).into_iter().collect();
+        // debug!("bitmap write {:?}", self.used);
+        let pos_list: Vec<_> = self.used.clone().into_iter().collect();
 
         Self::write_from_list(pos_list)
     }
