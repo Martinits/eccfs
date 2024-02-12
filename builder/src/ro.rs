@@ -30,6 +30,7 @@ type ChildInfo = (PathBuf, FileType, InodeID, Option<DotDotPos>);
 pub fn build_from_dir(
     from: &Path,
     to: &Path,
+    workdir: &Path,
     encrypted: Option<Key128>,
 ) -> FsResult<FSMode> {
     // check to
@@ -44,12 +45,11 @@ pub fn build_from_dir(
     }
 
     // prepare
-    let mut to_dir = to.to_path_buf();
-    assert!(to_dir.pop());
+    let work_dir = workdir.to_path_buf();
 
     let mut builder = ROBuilder::new(
         image,
-        to_dir,
+        work_dir,
         io_try!(fs::read_dir(from)).count(),
         encrypted.clone(),
     )?;
@@ -183,38 +183,38 @@ const DATA_TEMP_FILE: &str = ".data.eccfs";
 impl ROBuilder {
     fn new(
         to: File,
-        mut to_dir: PathBuf,
+        mut work_dir: PathBuf,
         root_dir_nr_entry: usize,
         encrypted: Option<Key128>,
     ) -> FsResult<Self> {
         // open meta temp file and data temp file
         // inode table
-        to_dir.push(ITBL_TEMP_FILE);
-        let itbl_path = to_dir.clone();
+        work_dir.push(ITBL_TEMP_FILE);
+        let itbl_path = work_dir.clone();
         let itbl = io_try!(OpenOptions::new()
                             .read(true).write(true).create_new(true)
-                            .open(&to_dir));
-        to_dir.pop();
+                            .open(&work_dir));
+        work_dir.pop();
         // dirent table
-        to_dir.push(DTBL_TEMP_FILE);
-        let dtbl_path = to_dir.clone();
+        work_dir.push(DTBL_TEMP_FILE);
+        let dtbl_path = work_dir.clone();
         let dtbl = io_try!(OpenOptions::new()
                             .read(true).write(true).create_new(true)
-                            .open(&to_dir));
-        to_dir.pop();
+                            .open(&work_dir));
+        work_dir.pop();
         // path table
-        to_dir.push(PTBL_TEMP_FILE);
-        let ptbl_path = to_dir.clone();
+        work_dir.push(PTBL_TEMP_FILE);
+        let ptbl_path = work_dir.clone();
         let ptbl = io_try!(OpenOptions::new()
                             .read(true).write(true).create_new(true)
-                            .open(&to_dir));
-        to_dir.pop();
+                            .open(&work_dir));
+        work_dir.pop();
         // data
-        to_dir.push(DATA_TEMP_FILE);
-        let data_path = to_dir.clone();
+        work_dir.push(DATA_TEMP_FILE);
+        let data_path = work_dir.clone();
         let data = io_try!(OpenOptions::new()
                             .read(true).write(true).create_new(true)
-                            .open(&to_dir));
+                            .open(&work_dir));
 
         // estimate root inode size
         let root_inode_max_sz = if root_dir_nr_entry as u64 <= DE_INLINE_MAX {
@@ -949,6 +949,7 @@ mod test {
 
         let from = format!("test/{}", &target);
         let to = format!("test/{}.roimage", &target);
+        let work_dir = "test";
 
         let k = match mode.as_str() {
             "enc" => {
@@ -965,6 +966,7 @@ mod test {
         let mode = super::build_from_dir(
             Path::new(&from),
             Path::new(&to),
+            Path::new(work_dir),
             k,
         ).unwrap();
         match &mode {
