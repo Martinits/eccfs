@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 eccfs = { path = "../eccfs/", features = ["std"]}
 hex = "0.4.3"
-libc = "0.2.153"
+libc = "0.2"
 rand = "0.8.5"
 rand_core = "0.6.4"
 
