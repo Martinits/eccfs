@@ -1,4 +1,7 @@
+#[cfg(not(feature = "std"))]
 use thiserror_no_std::Error;
+#[cfg(feature = "std")]
+use thiserror::Error;
 
 #[cfg(feature = "std")]
 use std::io::ErrorKind;
