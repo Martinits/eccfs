@@ -643,14 +643,16 @@ impl ROBuilder {
             );
             dinode_bytes.extend_from_slice(dinode_base.as_ref());
 
-            // read all bytes from source file
-            let mut f = io_try!(File::open(path));
-            let mut buf = vec![0u8; inode_ext_sz];
-            if io_try!(f.read(&mut buf)) != dinode_base.size as usize {
-                return Err(new_error!(FsError::UnexpectedEof));
+            if inode_ext_sz > 0 {
+                // read all bytes from source file
+                let mut f = io_try!(File::open(path));
+                let mut buf = vec![0u8; inode_ext_sz];
+                if io_try!(f.read(&mut buf)) != dinode_base.size as usize {
+                    return Err(new_error!(FsError::UnexpectedEof));
+                }
+                dinode_bytes.extend(&buf);
             }
 
-            dinode_bytes.extend(&buf);
             self.write_inode(&dinode_bytes, false)?
         } else {
             let data_start = get_file_pos(&mut self.data)?;

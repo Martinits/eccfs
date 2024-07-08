@@ -377,10 +377,12 @@ impl RWBuilder {
                 data: [0u8; REG_INLINE_DATA_MAX],
             };
 
-            // read all bytes from source file
-            let mut f = io_try!(File::open(path));
-            if io_try!(f.read(&mut inode.data[..sz as usize])) != sz as usize {
-                return Err(new_error!(FsError::UnexpectedEof));
+            if sz > 0 {
+                // read all bytes from source file
+                let mut f = io_try!(File::open(path));
+                if io_try!(f.read(&mut inode.data[..sz as usize])) != sz as usize {
+                    return Err(new_error!(FsError::UnexpectedEof));
+                }
             }
 
             inode.into()
