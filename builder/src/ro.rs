@@ -274,8 +274,10 @@ impl ROBuilder {
     fn jump_over_root_inode(&self, pos: u64, off: u16, sz: usize) -> (u64, u16) {
         // every pos and off is filter by this funciton,
         // so they can not be inside root_inode
-        assert!(!(pos == 1 && off < self.root_inode_max_sz));
+        assert!(!(pos == 1 && off < self.root_inode_max_sz && off > 0));
         if pos == 0 && off as usize + sz > BLK_SZ {
+            (1, self.root_inode_max_sz)
+        } else if pos == 1 && off == 0 {
             (1, self.root_inode_max_sz)
         } else {
             (pos, off)
